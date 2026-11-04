@@ -13,7 +13,7 @@ def api(path,method='GET',data=None):
 def save(name,value):
     (E/(name+'.json')).write_text(json.dumps(value,indent=2))
 def deploy(action='start'):
-    result=api('/applications/'+app+'/'+action,'GET')
+    result=api('/applications/'+app+'/'+action,'POST')
     deployment=result['deployment_uuid']
     for i in range(150):
         d=api('/deployments/'+deployment)
@@ -33,9 +33,7 @@ def deploy(action='start'):
         time.sleep(3)
     raise RuntimeError('Deployment timeout')
 def runtime():
-    ids=subprocess.check_output(['docker','ps','-aq','--filter','label=coolify.applicationId='+str(app_id)],text=True).split()
-    if not ids:
-        ids=subprocess.check_output(['docker','ps','-aq','--filter','name='+app],text=True).split()
+    ids=subprocess.check_output(['docker','ps','-aq','--filter','name='+app],text=True).split()
     all_=json.loads(subprocess.check_output(['docker','inspect',*ids],text=True)) if ids else []
     return [{'id':x['Id'],'service':x['Config']['Labels'].get('com.docker.compose.service'),'state':x['State']['Status'],'memory':x['HostConfig']['Memory'],'nanoCpus':x['HostConfig']['NanoCpus'],'ports':x['HostConfig']['PortBindings'],'mounts':x['Mounts'],'labels':x['Config']['Labels'],'networks':list(x['NetworkSettings']['Networks'])} for x in all_]
 def http():
@@ -51,7 +49,7 @@ sha=os.environ['GITHUB_SHA'];repo='https://github.com/'+os.environ['GITHUB_REPOS
 url='https://raw.githubusercontent.com/'+os.environ['GITHUB_REPOSITORY']+'/'+sha+'/bench/helper.sh'
 def command(mode): return 'curl -fsSL '+url+' -o /tmp/vibenest-contract-helper.sh && sh /tmp/vibenest-contract-helper.sh '+mode+' '+image
 body={'name':'compose-contract','project_uuid':project,'environment_name':'production','server_uuid':server['uuid'],'git_repository':repo,'git_branch':'main','git_commit_sha':sha,'build_pack':'dockercompose','ports_exposes':'3000','docker_compose_location':'/docker-compose.yaml','docker_compose_domains':[{'name':'web','domain':'http://contract.localhost:3000'}],'docker_compose_custom_build_command':command('build'),'docker_compose_custom_start_command':command('start'),'is_preserve_repository_enabled':True,'is_auto_deploy_enabled':False,'is_preview_deployments_enabled':False,'instant_deploy':False}
-app=api('/applications/public','POST',body)['uuid'];app_id=api('/applications/'+app)['id']
+app=api('/applications/public','POST',body)['uuid']
 pathlib.Path('/tmp/coolify-contract-app').write_text(app)
 save('identity',{'providerVersion':'4.5.3','sourceSha':sha,'application':app,'helperImage':image})
 assert deploy()['status']=='finished','Initial deploy failed'
