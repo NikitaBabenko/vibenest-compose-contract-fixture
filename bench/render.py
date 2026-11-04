@@ -4,6 +4,10 @@ doc=json.load(sys.stdin)
 assert set(doc['services'])=={'web','redis'}, 'Unexpected service set'
 for name,ram,cpu in [('web',384,0.375),('redis',128,0.125)]:
     s=doc['services'][name]
+    if sys.argv[1]=='build':
+        # Coolify creates runtime .env only after the build. Never copy build
+        # credentials into the source context just to satisfy this runtime path.
+        s.pop('env_file',None)
     s.pop('ports',None)
     s['mem_limit']=str(ram*1024*1024)
     s['cpus']=str(cpu)

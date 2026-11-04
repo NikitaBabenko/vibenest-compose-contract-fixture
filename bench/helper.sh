@@ -8,7 +8,11 @@ case "$mode" in
   *) exit 64 ;;
 esac
 # The provider has already inserted its labels, image names and network identities.
-docker compose --project-directory . -f docker-compose.yaml config --format json | docker run --rm -i "$image" > "$output.tmp"
+if [ "$mode" = build ]; then
+  docker compose --env-file /artifacts/build-time.env --project-directory . -f docker-compose.yaml config --no-env-resolution --format json | docker run --rm -i "$image" build > "$output.tmp"
+else
+  docker compose --project-directory . -f docker-compose.yaml config --format json | docker run --rm -i "$image" start > "$output.tmp"
+fi
 test -s "$output.tmp"
 mv "$output.tmp" "$output"
 if [ "$mode" = build ]; then
