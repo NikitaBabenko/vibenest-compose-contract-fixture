@@ -30,11 +30,23 @@ for i in range(120):
     except Exception: pass
     time.sleep(3)
 else: raise RuntimeError('Coolify bootstrap health timeout')
+# Health can become available before the initial seed completes.
+prefix='require "vendor/autoload.php"; $app=require "bootstrap/app.php"; $app->make(Illuminate\\Contracts\\Console\\Kernel::class)->bootstrap(); '
+probe=prefix+'if (!App\\Models\\User::where("id",0)->exists() || !App\\Models\\InstanceSettings::first()) exit(2); echo "ready";'
+for i in range(60):
+    r=subprocess.run(['docker','exec','coolify','php','-r',probe],capture_output=True,text=True)
+    if r.returncode==0 and r.stdout.endswith('ready'):break
+    time.sleep(3)
+else:
+    detail=r.stdout+r.stderr
+    for key,val in env.items():
+        if len(val)>8:detail=detail.replace(val,'[redacted]')
+    raise RuntimeError('Initial seed not ready: '+detail[-2000:])
 # Bootstrap only this disposable instance; never used against production.
 php="""$settings=App\\Models\\InstanceSettings::first(); $settings->update(['is_api_enabled'=>true]);
 $user=App\\Models\\User::findOrFail(0); $token=$user->createToken('isolated-contract',['root']);
 $token->accessToken->team_id=0; $token->accessToken->save(); echo $token->plainTextToken;"""
-r=run(['docker','exec','coolify','php','artisan','tinker','--execute='+php],capture_output=True,text=True)
+r=run(['docker','exec','coolify','php','-r',prefix+php],capture_output=True,text=True)
 token=r.stdout.strip().splitlines()[-1]
 assert '|' in token, 'Ephemeral token bootstrap failed'
 print('::add-mask::'+token,flush=True)
