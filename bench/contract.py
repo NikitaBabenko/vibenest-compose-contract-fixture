@@ -47,7 +47,12 @@ server=api('/servers')[0]
 project=api('/projects','POST',{'name':'Isolated contract'})['uuid']
 sha=os.environ['GITHUB_SHA'];repo='https://github.com/'+os.environ['GITHUB_REPOSITORY']
 url='https://raw.githubusercontent.com/'+os.environ['GITHUB_REPOSITORY']+'/'+sha+'/bench/helper.sh'
-def command(mode): return 'curl -fsSL '+url+' -o /tmp/vibenest-contract-helper.sh && sh /tmp/vibenest-contract-helper.sh '+mode+' '+image+' --project-directory .'
+def command(mode):
+    # Coolify 4.5.3 stores custom commands in varchar(255). The local image's
+    # unambiguous short ID avoids a mutable tag; full identity is in evidence.
+    value='curl -fsSL '+url+' -o /tmp/vh && sh /tmp/vh '+mode+' '+image.split(':')[1][:12]+' --project-directory .'
+    assert len(value)<=255, 'Provider custom-command size limit'
+    return value
 body={'name':'compose-contract','project_uuid':project,'environment_name':'production','server_uuid':server['uuid'],'git_repository':repo,'git_branch':'main','git_commit_sha':sha,'build_pack':'dockercompose','ports_exposes':'3000','docker_compose_location':'/docker-compose.yaml','docker_compose_domains':[{'name':'web','domain':'http://contract.localhost:3000'}],'docker_compose_custom_build_command':command('build'),'docker_compose_custom_start_command':command('start'),'is_preserve_repository_enabled':True,'is_auto_deploy_enabled':False,'is_preview_deployments_enabled':False,'instant_deploy':False}
 app=api('/applications/public','POST',body)['uuid']
 pathlib.Path('/tmp/coolify-contract-app').write_text(app)

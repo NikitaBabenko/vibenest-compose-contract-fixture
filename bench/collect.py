@@ -4,7 +4,7 @@ r=subprocess.run(['docker','ps','-a','--format','{{.ID}}\t{{.Names}}\t{{.Image}}
 (p/'containers.txt').write_text(r.stdout)
 script='''$files=glob("/var/www/html/storage/logs/laravel*.log"); foreach($files as $file) { foreach(file($file) as $line) { if(str_contains($line,".ERROR:")) echo explode('{"exception"',$line)[0]."\\n"; } }'''
 r=subprocess.run(['docker','exec','coolify','php','-r',script],text=True,capture_output=True)
-errors=r.stdout
+errors='\n'.join(line.split('(Connection:')[0] for line in r.stdout.splitlines())
 envfile=pathlib.Path('/data/coolify/source/.env')
 if envfile.exists():
     for line in envfile.read_text().splitlines():
