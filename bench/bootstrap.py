@@ -10,7 +10,7 @@ for file in ['docker-compose.yml','docker-compose.prod.yml']:
 env={'LATEST_IMAGE':'4.5.3','APP_ID':secrets.token_hex(16),'APP_KEY':'base64:'+base64.b64encode(secrets.token_bytes(32)).decode(),
      'DB_USERNAME':'coolify','DB_PASSWORD':secrets.token_hex(24),'REDIS_PASSWORD':secrets.token_hex(24),
      'PUSHER_APP_ID':secrets.token_hex(12),'PUSHER_APP_KEY':secrets.token_hex(24),'PUSHER_APP_SECRET':secrets.token_hex(24),
-     'ROOT_USERNAME':'ContractAdmin','ROOT_USER_EMAIL':'contract@example.invalid','ROOT_USER_PASSWORD':secrets.token_hex(24)}
+     'ROOT_USERNAME':'ContractAdmin'}
 for key,val in env.items():
     if any(x in key for x in ['PASSWORD','SECRET','KEY']): print('::add-mask::'+val,flush=True)
 (root/'source/.env').write_text('\n'.join(f'{k}={v}' for k,v in env.items())+'\n')
@@ -32,7 +32,7 @@ for i in range(120):
 else: raise RuntimeError('Coolify bootstrap health timeout')
 # Health can become available before the initial seed completes.
 prefix='require "vendor/autoload.php"; $app=require "bootstrap/app.php"; $app->make(Illuminate\\Contracts\\Console\\Kernel::class)->bootstrap(); '
-probe=prefix+'if (!App\\Models\\User::where("id",0)->exists() || !App\\Models\\InstanceSettings::first()) exit(2); echo "ready";'
+probe=prefix+'if (!App\\Models\\Team::where("id",0)->exists() || !App\\Models\\InstanceSettings::first() || !App\\Models\\Server::where("id",0)->exists()) exit(2); echo "ready";'
 for i in range(60):
     r=subprocess.run(['docker','exec','coolify','php','-r',probe],capture_output=True,text=True)
     if r.returncode==0 and r.stdout.endswith('ready'):break
@@ -44,7 +44,8 @@ else:
     raise RuntimeError('Initial seed not ready: '+detail[-2000:])
 # Bootstrap only this disposable instance; never used against production.
 php="""$settings=App\\Models\\InstanceSettings::first(); $settings->update(['is_api_enabled'=>true]);
-$user=App\\Models\\User::findOrFail(0); $token=$user->createToken('isolated-contract',['root']);
+$user=App\\Models\\User::find(0); if (!$user) { $user=(new App\\Models\\User)->forceFill(['id'=>0,'name'=>'ContractAdmin','email'=>'contract@example.invalid','password'=>Illuminate\\Support\\Facades\\Hash::make(bin2hex(random_bytes(32)))]); $user->save(); $user->teams()->attach(0,['role'=>'owner']); }
+$token=$user->createToken('isolated-contract',['root']);
 $token->accessToken->team_id=0; $token->accessToken->save(); echo $token->plainTextToken;"""
 r=run(['docker','exec','coolify','php','-r',prefix+php],capture_output=True,text=True)
 token=r.stdout.strip().splitlines()[-1]
