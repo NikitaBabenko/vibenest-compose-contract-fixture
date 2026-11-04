@@ -44,10 +44,12 @@ else:
     raise RuntimeError('Initial seed not ready: '+detail[-2000:])
 # Bootstrap only this disposable instance; never used against production.
 php="""$settings=App\\Models\\InstanceSettings::first(); $settings->update(['is_api_enabled'=>true]);
-$user=App\\Models\\User::find(0); if (!$user) { $user=(new App\\Models\\User)->forceFill(['id'=>0,'name'=>'ContractAdmin','email'=>'contract@example.invalid','password'=>Illuminate\\Support\\Facades\\Hash::make(bin2hex(random_bytes(32)))]); $user->save(); $user->teams()->attach(0,['role'=>'owner']); }
-$token=$user->createToken('isolated-contract',['root']);
+$user=App\\Models\\User::find(0); if (!$user) { $user=(new App\\Models\\User)->forceFill(['id'=>0,'name'=>'ContractAdmin','email'=>'contract@example.invalid','password'=>Illuminate\\Support\\Facades\\Hash::make(bin2hex(random_bytes(32)))]); $user->save(); }
+$token=$user->createToken('isolated-contract',['root'],null,0);
 $token->accessToken->team_id=0; $token->accessToken->save(); echo $token->plainTextToken;"""
-r=run(['docker','exec','coolify','php','-r',prefix+php],capture_output=True,text=True)
+r=subprocess.run(['docker','exec','coolify','php','-r',prefix+'try {'+php+'} catch (Throwable $e) { fwrite(STDERR,get_class($e)." at ".$e->getFile().":".$e->getLine()."\\n"); exit(3); }'],capture_output=True,text=True)
+if r.returncode:
+    raise RuntimeError('Ephemeral API bootstrap failed: '+r.stderr[-2000:])
 token=r.stdout.strip().splitlines()[-1]
 assert '|' in token, 'Ephemeral token bootstrap failed'
 print('::add-mask::'+token,flush=True)
