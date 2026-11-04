@@ -60,14 +60,22 @@ for service,memory,cpu in [('web',384*1024*1024,375000000),('redis',128*1024*102
     assert not x['ports'],(service,'host ports')
     assert any(m['Type']=='volume' and m['RW'] for m in x['mounts'])
 first_http=http();save('initial-http',first_http);assert first_http['redis']=='+PONG'
+def assert_same_runtime(after):
+    for name in ['web','redis']:
+        previous=next(x for x in first if x['service']==name and x['state']=='running')
+        current=next(x for x in after if x['service']==name and x['state']=='running')
+        for key in ['memory','nanoCpus','ports','networks']:
+            assert previous[key]==current[key],(name,key,'changed after lifecycle')
+        mounts=lambda x: sorted((m['Name'],m['Destination'],m['RW']) for m in x['mounts'] if m['Type']=='volume')
+        assert mounts(previous)==mounts(current),(name,'volume identity changed')
 work=pathlib.Path('/data/coolify/applications')/app
 effective=work/'.vibenest-final/effective.json'
 assert effective.exists(),'Effective configuration did not survive provider finalization'
 config=json.loads(effective.read_text());save('saved-config-shape',{'services':list(config['services']),'volumes':config.get('volumes'),'limits':{k:{q:v.get(q) for q in ['mem_limit','cpus','ports','image','networks','labels']} for k,v in config['services'].items()}})
 assert deploy('restart')['status']=='finished','Restart failed'
-second=http();save('restart-http',second);save('restart-runtime',runtime());assert second['marker']==first_http['marker']
+second=http();save('restart-http',second);second_runtime=runtime();save('restart-runtime',second_runtime);assert second['marker']==first_http['marker'];assert_same_runtime(second_runtime)
 assert deploy()['status']=='finished','Redeploy failed'
-third=http();save('redeploy-http',third);save('redeploy-runtime',runtime());assert third['marker']==first_http['marker']
+third=http();save('redeploy-http',third);third_runtime=runtime();save('redeploy-runtime',third_runtime);assert third['marker']==first_http['marker'];assert_same_runtime(third_runtime)
 # Test the mandatory old-revision preservation contract without touching production.
 api('/applications/'+app,'PATCH',{'docker_compose_custom_start_command':'false'})
 result=deploy();save('refused-start',result)
