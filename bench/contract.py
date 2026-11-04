@@ -5,7 +5,7 @@ E=pathlib.Path('evidence');E.mkdir(exist_ok=True)
 token=pathlib.Path('/tmp/coolify-contract-token').read_text()
 image=pathlib.Path('/tmp/coolify-contract-helper').read_text()
 def api(path,method='GET',data=None):
-    request=urllib.request.Request('http://127.0.0.1:8000/api/v1'+path,method=method,headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'},data=json.dumps(data).encode() if data is not None else None)
+    request=urllib.request.Request('http://127.0.0.1:8000/api/v1'+path,method=method,headers={'Authorization':'Bearer '+token,'Content-Type':'application/json','Accept':'application/json'},data=json.dumps(data).encode() if data is not None else None)
     try:
         with urllib.request.urlopen(request,timeout=30) as r:return json.load(r)
     except urllib.error.HTTPError as e:
