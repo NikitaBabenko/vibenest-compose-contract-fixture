@@ -1,6 +1,8 @@
 name: Coolify 4.5.3 isolated Compose contract
 on:
   workflow_dispatch: {}
+  push:
+    paths: ['.github/workflows/contract.yml']
 permissions:
   contents: read
 concurrency:
@@ -8,6 +10,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   contract:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
