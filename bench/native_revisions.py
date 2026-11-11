@@ -11,6 +11,7 @@ import urllib.error
 from revision_assertions import writer_trace, check_runtime
 from revision_identity import checks as identity_checks
 from revision_wait import wait_for_removal
+from revision_receipt import record_terminal
 
 assert os.environ.get('GITHUB_ACTIONS')=='true', 'Disposable runner only'
 E=pathlib.Path('evidence');E.mkdir(exist_ok=True)
@@ -101,19 +102,11 @@ def http(host):
 def deploy(app,action='start'):
     response=api('/applications/'+app+'/'+action,'POST')
     deployment=response['deployment_uuid']
+    save('revision-dispatch-'+deployment,{'application':app,'action':action,'deployment_uuid':deployment})
     for _ in range(150):
         d=api('/deployments/'+deployment)
         if d.get('status') in ['finished','failed','cancelled','canceled']:
-            receipt={k:d.get(k) for k in ['deployment_uuid','status','commit','created_at','updated_at']}
-            logs=d.get('logs',[])
-            if isinstance(logs,str):
-                try:logs=json.loads(logs)
-                except json.JSONDecodeError:logs=[]
-            if receipt['status']!='finished':
-                messages=[x.get('output','') for x in logs if isinstance(x,dict)]
-                receipt['syntheticFailureMessages']=[x for x in messages if 'error' in x.lower() or 'failed' in x.lower()][-8:]
-            save('revision-deployment-'+deployment,receipt)
-            return receipt
+            return record_terminal(deployment,d,save)
         time.sleep(2)
     raise RuntimeError('Deployment outcome unknown; no retry/recovery')
 

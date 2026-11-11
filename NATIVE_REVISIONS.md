@@ -135,3 +135,18 @@ fake-clock tests reproduce the observed delayed serial stop, both30-second grace
 periods, permanent running/exited containers, unknown/failed reads, boundary and
 late observations without actually sleeping. Next full probe estimate6–10minutes,
 same25-minute workflow ceiling; dispatch remains exclusively with Scrumboy.
+
+## Terminal receipt precedes optional logs
+
+Run43014826169 (a382bd81) stopped in old-seed-deploy. A terminal response contained
+logs=null; iterating it threw TypeError before persisting the receipt. The artifact
+does not establish the exact provider terminal status or underlying failure cause.
+This run did not exercise the revised stop deadline or any recovery phase.
+
+The correction writes accepted dispatch UUID immediately, then exact selected
+terminal status/commit/timestamps before touching optional logs. A mismatching
+reported UUID is saved as evidence and rejected. Null, list, JSON string, map,
+malformed/scalar logs and non-string outputs cannot erase or override the terminal
+receipt. Diagnostic parsing is bounded and isolated; persistence failures remain
+fatal. Tests also inject a parser exception and verify the original receipt survives.
+No automatic retry, status inference or successful deployment claim is introduced.
