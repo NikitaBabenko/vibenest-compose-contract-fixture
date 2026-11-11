@@ -1,4 +1,4 @@
-name: Coolify 4.5.3 isolated Compose contract
+name: Coolify 4.7.5 isolated Compose lifecycle contract
 on:
   workflow_dispatch: {}
 permissions:
@@ -13,6 +13,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+      - name: Check evidence assertions and fault injection
+        run: python3 -m unittest discover -s bench -p 'test_*.py' -v
       - name: Bootstrap disposable Coolify
         run: python3 bench/bootstrap.py
       - name: Native provider contract

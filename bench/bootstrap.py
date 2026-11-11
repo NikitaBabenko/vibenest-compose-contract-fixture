@@ -1,13 +1,15 @@
 import base64, json, os, pathlib, secrets, subprocess, time, urllib.request
 
 assert os.environ.get('GITHUB_ACTIONS') == 'true', 'Disposable Actions runner only'
+VERSION = '4.7.5'
+SOURCE = '378ce3735c4522ebb6b68e93b909b0511f278763'
 root=pathlib.Path('/data/coolify')
 def run(args,**kw): return subprocess.run(args,check=True,**kw)
 run(['sudo','mkdir','-p',*[str(root/x) for x in ['source','ssh/keys','ssh/mux','applications','databases','services','backups','images']]])
 run(['sudo','chown','-R',f'{os.getuid()}:{os.getgid()}',str(root)])
 for file in ['docker-compose.yml','docker-compose.prod.yml']:
-    (root/'source'/file).write_bytes(urllib.request.urlopen('https://raw.githubusercontent.com/coollabsio/coolify/v4.5.3/'+file,timeout=30).read())
-env={'LATEST_IMAGE':'4.5.3','APP_ID':secrets.token_hex(16),'APP_KEY':'base64:'+base64.b64encode(secrets.token_bytes(32)).decode(),
+    (root/'source'/file).write_bytes(urllib.request.urlopen('https://raw.githubusercontent.com/coollabsio/coolify/'+SOURCE+'/'+file,timeout=30).read())
+env={'LATEST_IMAGE':VERSION,'APP_ID':secrets.token_hex(16),'APP_KEY':'base64:'+base64.b64encode(secrets.token_bytes(32)).decode(),
      'DB_USERNAME':'coolify','DB_PASSWORD':secrets.token_hex(24),'REDIS_PASSWORD':secrets.token_hex(24),
      'PUSHER_APP_ID':secrets.token_hex(12),'PUSHER_APP_KEY':secrets.token_hex(24),'PUSHER_APP_SECRET':secrets.token_hex(24),
      'ROOT_USERNAME':'ContractAdmin'}
@@ -23,6 +25,11 @@ run(['sudo','systemctl','start','ssh'])
 run(['sudo','chown','-R','9999:root',str(root/'ssh')])
 run(['docker','network','create','coolify'])
 run(['docker','compose','--env-file',str(root/'source/.env'),'-f',str(root/'source/docker-compose.yml'),'-f',str(root/'source/docker-compose.prod.yml'),'up','-d'])
+# Record the actual pulled artifact, not just a mutable version tag. No Env export.
+provider_image=subprocess.check_output(['docker','inspect','coolify','--format','{{.Image}}'],text=True).strip()
+provider_digests=json.loads(subprocess.check_output(['docker','image','inspect',provider_image,'--format','{{json .RepoDigests}}'],text=True))
+evidence=pathlib.Path('evidence');evidence.mkdir(exist_ok=True)
+(evidence/'provider-artifact.json').write_text(json.dumps({'requestedVersion':VERSION,'composeSourceSha':SOURCE,'imageId':provider_image,'repoDigests':provider_digests},indent=2))
 for i in range(120):
     try:
         with urllib.request.urlopen('http://127.0.0.1:8000/api/health',timeout=3) as r:
@@ -58,4 +65,4 @@ pathlib.Path('/tmp/coolify-contract-token').chmod(0o600)
 run(['docker','build','-f','bench/helper.Dockerfile','-t','vibenest-contract-helper:local','.'])
 image=subprocess.check_output(['docker','image','inspect','vibenest-contract-helper:local','--format','{{.Id}}'],text=True).strip()
 pathlib.Path('/tmp/coolify-contract-helper').write_text(image)
-print('Disposable Coolify 4.5.3 ready')
+print('Disposable Coolify '+VERSION+' ready')
