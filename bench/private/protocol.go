@@ -189,7 +189,7 @@ func (s *Store) Submit(t string, scope Scope, data []byte) (string, error) {
 	var artifact RuntimeArtifact
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
-	if !strictJSON(data) || d.Decode(&artifact) != nil || d.Decode(new(any)) != io.EOF || artifact.Validate(scope) != nil {
+	if !exactArtifact(data) || d.Decode(&artifact) != nil || d.Decode(new(any)) != io.EOF || artifact.Validate(scope) != nil {
 		return "", ErrDenied
 	}
 	nonce := make([]byte, s.aead.NonceSize())

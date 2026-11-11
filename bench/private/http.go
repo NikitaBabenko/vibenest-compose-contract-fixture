@@ -24,7 +24,7 @@ func parseScope(h string) (Scope, error) {
 		return scope, ErrDenied
 	}
 	b, err := base64.RawURLEncoding.DecodeString(h)
-	if err != nil || !strictJSON(b) {
+	if err != nil || !exactScope(b) {
 		return scope, ErrDenied
 	}
 	d := json.NewDecoder(bytes.NewReader(b))
@@ -193,7 +193,8 @@ func receiptDigest(b []byte, expected string) (string, error) {
 	}
 	d := json.NewDecoder(bytes.NewReader(b))
 	d.DisallowUnknownFields()
-	if !strictJSON(b) || d.Decode(&receipt) != nil || d.Decode(new(any)) != io.EOF || receipt.Digest != expected {
+	_, exact := exactObject(b, "digest")
+	if !exact || d.Decode(&receipt) != nil || d.Decode(new(any)) != io.EOF || receipt.Digest != expected {
 		return "", ErrDenied
 	}
 	return receipt.Digest, nil
