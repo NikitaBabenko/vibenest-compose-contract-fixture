@@ -58,3 +58,28 @@ binary parity remain separate acceptance items even if every primitive passes.
 
 If a primitive fails, report its exact checkpoint and evidence as unproven/blocked.
 Do not remove assertions or stateful production guards to manufacture success.
+
+## First attempt and bounded correction
+
+Run42999097437 (d798cfe9) stopped during the first baseline build, before any
+two-resource checkpoint. Coolify injectDockerComposeBuildArgs inserted build-arg
+pairs between the wrapper's build verb and helper image positional argument.
+The Docker invocation therefore mistook --build-arg for its image. This is a
+fixture command-contract defect, not evidence that native revisions cannot work.
+
+The corrected native build invocation puts image and project-directory before
+the build verb and forwards all injected trailing arguments verbatim to Compose
+build, without eval or argument logging. A local shell test invokes the actual
+helper with a Docker stub using the observed prefix/hash argument shape, and
+checks values containing spaces and shell metacharacters remain single arguments.
+VN_CONTRACT_VOLUME_PREFIX is explicitly runtime-only; injection correctness does
+not depend on an empty build-time environment or absent synthetic hash.
+
+At provider source378ce373, ApplicationsController:5074 dispatches StopApplication
+with its default removeContainers=true. The action issues stop followed by rm -f.
+The corrected probe requires actual runtime=[] after every native stop, records
+that checkpoint, and rejects even stopped containers referencing shared volumes.
+Native docker_cleanup=false prevents asynchronous cleanup during this bounded
+retained-artifact experiment. Candidate create/prepare likewise require no
+containers, including exited ones. These are observations of serialized actions;
+durable platform fencing and admission for future queued commands remain required.

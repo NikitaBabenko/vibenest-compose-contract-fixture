@@ -56,7 +56,9 @@ def api(path,method='GET',data=None):
 def command(mode):
     script='helper' if mode=='build' else 'revisions'
     url='https://raw.githubusercontent.com/'+os.environ['GITHUB_REPOSITORY']+'/'+sha+'/bench/'+script+'.sh'
-    cmd='curl -fsSL '+url+' -o /tmp/vh && sh /tmp/vh '+mode+' '+image.split(':')[1][:12]+' --project-directory .'
+    helper_id=image.split(':')[1][:12]
+    args=(helper_id+' --project-directory . build') if mode=='build' else (mode+' '+helper_id+' --project-directory .')
+    cmd='curl -fsSL '+url+' -o /tmp/vh && sh /tmp/vh '+args
     assert len(cmd)<=255,'Custom command too long'
     return cmd
 
@@ -66,6 +68,7 @@ def runtime(app):
     return [{'id':x['Id'],'service':x['Config']['Labels'].get('com.docker.compose.service'),
         'project':x['Config']['Labels'].get('com.docker.compose.project'),
         'image':x['Image'],'state':x['State']['Status'],'exitCode':x['State']['ExitCode'],
+        'restartPolicy':x['HostConfig']['RestartPolicy'],
         'memory':x['HostConfig']['Memory'],'nanoCpus':x['HostConfig']['NanoCpus'],
         'ports':x['HostConfig']['PortBindings'],
         'mounts':sorted([(m.get('Name'),m['Destination'],m['RW']) for m in x['Mounts']])} for x in rows]
@@ -105,20 +108,24 @@ def fresh_identity(app):
 
 def stop(app):
     fresh_identity(app)
-    api('/applications/'+app+'/stop','POST')
+    api('/applications/'+app+'/stop','POST',{'docker_cleanup':False})
     for _ in range(30):
         observed=runtime(app)
-        if not any(x['state'] in ['running','restarting','paused'] for x in observed):
+        # Empty including exited containers: no latent Docker restart-policy actor.
+        if observed==[]:
+            checkpoint('revision-stop-'+app+'-'+str(len(result['steps'])),
+                       {'application':app,'runtime':observed,'containersRemoved':True})
             return observed
         time.sleep(1)
-    raise RuntimeError('Stop unconfirmed; no successor start')
+    save('revision-stop-incomplete',{'application':app,'runtime':observed})
+    raise RuntimeError('Container removal unconfirmed; no successor start')
 
 def no_writers():
     # Read-only engine evidence across ALL apps on this disposable host.
     for volume in volume_names:
         subprocess.run(['docker','volume','inspect',volume],check=True,stdout=subprocess.DEVNULL)
-        ids=subprocess.check_output(['docker','ps','-q','--filter','volume='+volume],text=True).split()
-        assert not ids,'Shared volume still has a live container; no launch authorized'
+        ids=subprocess.check_output(['docker','ps','-aq','--filter','volume='+volume],text=True).split()
+        assert not ids,'Shared volume still has a container, including stopped; no launch authorized'
 
 def work(app):return pathlib.Path('/data/coolify/applications')/app
 def digest(path):return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -141,7 +148,7 @@ def create(name,domain,mode):
         'is_preserve_repository_enabled':True,'is_auto_deploy_enabled':False,
         'is_preview_deployments_enabled':False,'instant_deploy':False}
     app=api('/applications/public','POST',body)['uuid']
-    api('/applications/'+app+'/envs','POST',{'key':'VN_CONTRACT_VOLUME_PREFIX','value':prefix,'is_literal':True,'is_preview':False})
+    api('/applications/'+app+'/envs','POST',{'key':'VN_CONTRACT_VOLUME_PREFIX','value':prefix,'is_literal':True,'is_preview':False,'is_build_time':False})
     assert runtime(app)==[],'Create unexpectedly launched runtime'
     return app
 
