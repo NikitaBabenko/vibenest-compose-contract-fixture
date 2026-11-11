@@ -12,6 +12,7 @@ from revision_assertions import writer_trace, check_runtime
 from revision_identity import checks as identity_checks
 from revision_wait import wait_for_removal
 from revision_receipt import record_terminal
+from revision_inventory import read_containers
 
 assert os.environ.get('GITHUB_ACTIONS')=='true', 'Disposable runner only'
 E=pathlib.Path('evidence');E.mkdir(exist_ok=True)
@@ -80,9 +81,8 @@ def command(mode):
     assert len(cmd)<=255,'Custom command too long'
     return cmd
 
-def runtime(app):
-    ids=subprocess.check_output(['docker','ps','-aq','--filter','name='+app],text=True,timeout=10).split()
-    rows=json.loads(subprocess.check_output(['docker','inspect',*ids],text=True,timeout=10)) if ids else []
+def runtime(app, *, deadline=None):
+    rows=read_containers(app,deadline=deadline)
     return [{'id':x['Id'],'service':x['Config']['Labels'].get('com.docker.compose.service'),
         'project':x['Config']['Labels'].get('com.docker.compose.project'),
         'image':x['Image'],'state':x['State']['Status'],'exitCode':x['State']['ExitCode'],
@@ -137,7 +137,8 @@ def stop(app):
         save(name+'-observation',evidence)
     # Provider stops services sequentially, each with a30s default grace period.
     # Allow2*30s plus bounded queue/transport overhead; never treat ACK as removal.
-    observed=wait_for_removal(lambda:runtime(app),observe=record)
+    observed=wait_for_removal(lambda deadline:runtime(app,deadline=deadline),
+                              observe=record,read_with_deadline=True)
     checkpoint(name,{'application':app,'runtime':observed,'containersRemoved':True,
                      'elapsedSeconds':evidence['elapsedSeconds']})
     return observed
