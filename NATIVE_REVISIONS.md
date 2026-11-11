@@ -108,3 +108,30 @@ named mounts with no anonymous/image-added mounts, no host ports, and exact
 384MiB/.375CPU +128MiB/.125CPU budgets. Local negative tests cover wrong namespace,
 extra image volumes, read-only mount, duplicated container, ports and wrong limits.
 These strengthen assertions; no failed check is removed to obtain PASS.
+
+## Native stop reconciliation correction
+
+Run43004823404 (469e5e2) passed both old-baseline and candidate-prepared checkpoints:
+candidate runtime=[]; old HTTP/runtime/config unchanged; exact named volumes and
+image-pinned artifact prepared. It stopped at old-remove-and-candidate-activate
+because the fixture's30-second observation window was too short for native stop.
+Events (UTC): web first kill10:36:12.974, second kill42.982, die43.059,
+destroy43.094; Redis kill43.154. The fixture exited43.338 before observing final
+removal; collect.py then found neither application container. No candidate start,
+cutover or retained recovery was attempted.
+
+Pinned source StopApplication loops through containers and performs stop then rm
+sequentially. ApplicationSetting.stopGracePeriodSeconds uses the default constant
+30 seconds (bootstrap/helpers/constants.php:63) when no override is configured.
+This fixture has two services and no override. The correction grants a bounded
+120-second monotonic reconciliation window (2*30 seconds plus queue/transport
+headroom), observes the final deadline boundary, and still requires runtime=[]
+including exited containers. ACK, elapsed time, partial removal or missing evidence
+never authorizes the successor. Docker read calls have10-second timeouts; unknown
+or late-empty observations fail closed. No stop retry/direct Docker actuation.
+
+Each stop records safe before/last runtime and bounded state transitions. Local
+fake-clock tests reproduce the observed delayed serial stop, both30-second grace
+periods, permanent running/exited containers, unknown/failed reads, boundary and
+late observations without actually sleeping. Next full probe estimate6–10minutes,
+same25-minute workflow ceiling; dispatch remains exclusively with Scrumboy.

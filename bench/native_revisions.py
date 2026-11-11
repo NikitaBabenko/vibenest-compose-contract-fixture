@@ -10,6 +10,7 @@ import urllib.request
 import urllib.error
 from revision_assertions import writer_trace, check_runtime
 from revision_identity import checks as identity_checks
+from revision_wait import wait_for_removal
 
 assert os.environ.get('GITHUB_ACTIONS')=='true', 'Disposable runner only'
 E=pathlib.Path('evidence');E.mkdir(exist_ok=True)
@@ -79,8 +80,8 @@ def command(mode):
     return cmd
 
 def runtime(app):
-    ids=subprocess.check_output(['docker','ps','-aq','--filter','name='+app],text=True).split()
-    rows=json.loads(subprocess.check_output(['docker','inspect',*ids],text=True)) if ids else []
+    ids=subprocess.check_output(['docker','ps','-aq','--filter','name='+app],text=True,timeout=10).split()
+    rows=json.loads(subprocess.check_output(['docker','inspect',*ids],text=True,timeout=10)) if ids else []
     return [{'id':x['Id'],'service':x['Config']['Labels'].get('com.docker.compose.service'),
         'project':x['Config']['Labels'].get('com.docker.compose.project'),
         'image':x['Image'],'state':x['State']['Status'],'exitCode':x['State']['ExitCode'],
@@ -125,17 +126,28 @@ def fresh_identity(app):
 
 def stop(app):
     fresh_identity(app)
+    before=runtime(app)
+    assert len(before)<=2,'Unexpected runtime size; stop scenario not bounded'
+    evidence={'application':app,'timeoutSeconds':120,'before':before,'history':[]}
+    name='revision-stop-'+app+'-'+str(len(result['steps']))
+    save(name+'-observation',evidence)
     api('/applications/'+app+'/stop','POST',{'docker_cleanup':False})
-    for _ in range(30):
-        observed=runtime(app)
-        # Empty including exited containers: no latent Docker restart-policy actor.
-        if observed==[]:
-            checkpoint('revision-stop-'+app+'-'+str(len(result['steps'])),
-                       {'application':app,'runtime':observed,'containersRemoved':True})
-            return observed
-        time.sleep(1)
-    save('revision-stop-incomplete',{'application':app,'runtime':observed})
-    raise RuntimeError('Container removal unconfirmed; no successor start')
+    evidence['stopAcknowledged']=True
+    save(name+'-observation',evidence)
+    def record(elapsed,rows):
+        evidence['elapsedSeconds']=round(elapsed,3)
+        evidence['runtime']=rows[:32]
+        state=[{'id':x['id'],'service':x['service'],'state':x['state']} for x in rows[:32]]
+        if not evidence['history'] or evidence['history'][-1]['runtime']!=state:
+            evidence['history'].append({'elapsedSeconds':round(elapsed,3),'runtime':state})
+        assert len(evidence['history'])<=125,'Unexpected runtime churn'
+        save(name+'-observation',evidence)
+    # Provider stops services sequentially, each with a30s default grace period.
+    # Allow2*30s plus bounded queue/transport overhead; never treat ACK as removal.
+    observed=wait_for_removal(lambda:runtime(app),observe=record)
+    checkpoint(name,{'application':app,'runtime':observed,'containersRemoved':True,
+                     'elapsedSeconds':evidence['elapsedSeconds']})
+    return observed
 
 def no_writers():
     # Read-only engine evidence across ALL apps on this disposable host.
