@@ -1,0 +1,23 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: private-app/Dockerfile
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - app-data:/app/data
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --appendfsync always
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 2s
+      timeout: 2s
+      retries: 10
+volumes:
+  app-data:
+  redis-data:
