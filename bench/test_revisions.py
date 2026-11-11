@@ -1,7 +1,7 @@
 import copy
 import unittest
 from revision_render import prepare, pin, retain, fault
-from revision_assertions import writer_trace
+from revision_assertions import writer_trace, check_runtime
 
 def doc():
     return {'services':{k:{'image':'fixture:'+k,'build':{'context':'.'},
@@ -58,6 +58,29 @@ class RevisionTests(unittest.TestCase):
 
     def test_unknown_phase_rejected(self):
         with self.assertRaises(ValueError):prepare(doc(),'fallback')
+
+class RuntimeTests(unittest.TestCase):
+    def rows(self):
+        return [{'service':name,'mounts':[('vnrev123-'+name,target,True)],'ports':{},
+                 'memory':ram*1024*1024,'nanoCpus':cpu}
+                for name,target,ram,cpu in [('web','/app/data',384,375000000),('redis','/data',128,125000000)]]
+
+    def test_exact_two_service_runtime_passes(self):
+        check_runtime(self.rows(),'vnrev123')
+
+    def test_extra_image_volume_or_wrong_named_volume_rejected(self):
+        for mounts in [[('other-web','/app/data',True)],
+                       [('vnrev123-web','/app/data',True),('anonymous','/image-volume',True)],
+                       [('vnrev123-web','/app/data',False)]]:
+            rows=self.rows();rows[0]['mounts']=mounts
+            with self.assertRaises(AssertionError):check_runtime(rows,'vnrev123')
+
+    def test_wrong_budget_host_port_or_duplicate_container_rejected(self):
+        for key,value in [('memory',1),('nanoCpus',1),('ports',{'3000/tcp':[]})]:
+            rows=self.rows();rows[0][key]=value
+            with self.assertRaises(AssertionError):check_runtime(rows,'vnrev123')
+        rows=self.rows();rows.append(copy.deepcopy(rows[0]))
+        with self.assertRaises(AssertionError):check_runtime(rows,'vnrev123')
 
 class WriterTests(unittest.TestCase):
     def event(self,id_,action):

@@ -100,3 +100,11 @@ The next correction checks those exact equivalent representations and source
 binding, never suffix/host normalization; branch/commit/UUID remain strict.
 Individual identity outcomes are saved before asserting, including a pre-build
 check immediately after create. No next run is automatically dispatched.
+
+Before the next run the fixture also persists currentStage at each phase and a
+bounded old runtime snapshot BEFORE mount/resource assertions (32 rows maximum,
+no raw ENV or host mount Source). Checks require exactly web+Redis, their exact
+named mounts with no anonymous/image-added mounts, no host ports, and exact
+384MiB/.375CPU +128MiB/.125CPU budgets. Local negative tests cover wrong namespace,
+extra image volumes, read-only mount, duplicated container, ports and wrong limits.
+These strengthen assertions; no failed check is removed to obtain PASS.

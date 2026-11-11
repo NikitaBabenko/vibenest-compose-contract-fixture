@@ -8,7 +8,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
-from revision_assertions import writer_trace
+from revision_assertions import writer_trace, check_runtime
 from revision_identity import checks as identity_checks
 
 assert os.environ.get('GITHUB_ACTIONS')=='true', 'Disposable runner only'
@@ -42,6 +42,10 @@ def save(name,value):
 
 def checkpoint(name,value):
     result['steps'].append(name);save(name,value);save('native-revisions-result',result)
+
+def stage(name):
+    result['currentStage']=name
+    save('native-revisions-result',result)
 
 def api(path,method='GET',data=None):
     req=urllib.request.Request('http://127.0.0.1:8000/api/v1'+path,method=method,
@@ -145,10 +149,7 @@ def digest(path):return hashlib.sha256(path.read_bytes()).hexdigest()
 def artifact(app,kind):return work(app)/'.vibenest-revision'/(kind+'.json')
 
 def check_mounts(rows):
-    for name,target in [('web','/app/data'),('redis','/data')]:
-        row=next(x for x in rows if x['service']==name)
-        assert row['mounts']==[(prefix+'-'+name,target,True)],'Wrong volume identity'
-        assert not row['ports'] and row['memory']>0 and row['nanoCpus']>0
+    check_runtime(rows,prefix)
 
 def images(rows):return {x['service']:x['image'] for x in rows}
 
@@ -167,17 +168,27 @@ def create(name,domain,mode):
     return app
 
 try:
+    stage('provider-setup')
     version=api('/version');assert version=='4.7.5' or version=={'version':'4.7.5'}
     server=api('/servers')[0]
     project=api('/projects','POST',{'name':'Native revision feasibility'})['uuid']
+    stage('old-create-and-identity')
     old=create('retained-old','old.contract.localhost','seed')
+    stage('old-seed-deploy')
     assert deploy(old)['status']=='finished','Old baseline deploy failed'
-    old_runtime=runtime(old);check_mounts(old_runtime)
+    stage('old-runtime-mounts-and-limits')
+    old_runtime=runtime(old)
+    save('revision-old-runtime-before-checks',{'count':len(old_runtime),'runtime':old_runtime[:32]})
+    check_mounts(old_runtime)
+    stage('old-http')
     baseline=http('old.contract.localhost');assert baseline['redis']=='+PONG'
+    stage('old-artifact-hashes')
     retained_hash=digest(artifact(old,'retained'))
     old_config_hash=digest(work(old)/'docker-compose.yaml')
+    stage('old-post-deploy-identity')
     checkpoint('revision-old-baseline',{'identity':fresh_identity(old),'runtime':old_runtime,'http':baseline,'retainedHash':retained_hash})
 
+    stage('candidate-create-and-prepare')
     candidate=create('staged-candidate','candidate.contract.localhost','prepare')
     assert deploy(candidate)['status']=='finished','Prepare-only native deploy failed'
     assert runtime(candidate)==[],'Prepare-only started candidate runtime'
@@ -191,6 +202,7 @@ try:
     checkpoint('revision-candidate-prepared',{'identity':fresh_identity(candidate),'runtime':runtime(candidate),'preparedHash':prepared_hash,
         'images':prepared_images,'volumes':volume_names,'oldUntouched':True})
 
+    stage('old-remove-and-candidate-activate')
     stop(old);no_writers()
     assert digest(artifact(candidate,'prepared'))==prepared_hash
     fresh_identity(candidate)
@@ -201,6 +213,7 @@ try:
     checkpoint('revision-candidate-active',{'runtime':active,'http':candidate_http,'oldRuntime':runtime(old)})
 
     # Explicit baseline restore for the second scenario. Never in an exception handler.
+    stage('candidate-remove-and-old-exact-resume')
     stop(candidate);no_writers();fresh_identity(old)
     assert digest(artifact(old,'retained'))==retained_hash
     api('/applications/'+old,'PATCH',{'docker_compose_custom_build_command':'true','docker_compose_custom_start_command':command('resume')})
@@ -210,6 +223,7 @@ try:
     checkpoint('revision-old-resumed',{'runtime':resumed,'http':resume_http,'retainedHash':digest(artifact(old,'retained'))})
 
     # Known synthetic compatibility: same web source and Redis digest, no schema migrations.
+    stage('old-remove-and-candidate-fault')
     stop(old);no_writers();fresh_identity(candidate)
     assert digest(artifact(candidate,'prepared'))==prepared_hash
     api('/applications/'+candidate,'PATCH',{'docker_compose_custom_start_command':command('fault')})
@@ -220,6 +234,7 @@ try:
 
     # Separate, deliberate synthetic recovery after exact outcome + no-writer proof.
     # Platform security/owner admission is NOT emulated or certified by this harness.
+    stage('candidate-remove-and-explicit-old-recovery')
     stop(candidate);no_writers();identity=fresh_identity(old)
     assert digest(artifact(old,'retained'))==retained_hash
     assert deploy(old,'restart')['status']=='finished','Gated fixture recovery failed'
@@ -227,6 +242,7 @@ try:
     recovered_http=http('old.contract.localhost')
     assert recovered_http['marker']==baseline['marker'] and recovered_http['boots']==resume_http['boots']+1
     checkpoint('revision-old-recovered',{'identity':identity,'runtime':recovered,'http':recovered_http,'retainedHash':digest(artifact(old,'retained'))})
+    stage('writer-trace-verification')
     time.sleep(1)
     stream.terminate();stream.wait(timeout=5);event_thread.join(timeout=5)
     projects={x['project'] for x in old_runtime+active}
