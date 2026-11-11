@@ -17,3 +17,12 @@ POST projects sends only name, unchanged and already accepted in both attempts.
 All other calls are GET version/servers/application/deployment. No retries or
 automatic mutation compensation are introduced. Local schema assertion checks
 the actual ENV call AST against the pinned provider's allowed fields.
+
+GET applications/uuid returns serialized model (application_by_uuid2838–2856).
+Public GitHub creation1936–1939 stores git_repository as owner/repository and
+source_type=App\\Models\\GithubApp, source_id=0, unlike the input HTTPS URL.
+The fixture now accepts only those two exact repository representations with the
+known source binding, while UUID, branch, SHA and build pack remain exact. Model
+Application::$hidden290–304 does not hide source_id/source_type. Identity checks
+are recorded as individual booleans, with no raw response dump; they run directly
+after create before build and again at each subsequent identity boundary.

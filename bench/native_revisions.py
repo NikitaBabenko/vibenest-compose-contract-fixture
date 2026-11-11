@@ -9,6 +9,7 @@ import time
 import urllib.request
 import urllib.error
 from revision_assertions import writer_trace
+from revision_identity import checks as identity_checks
 
 assert os.environ.get('GITHUB_ACTIONS')=='true', 'Disposable runner only'
 E=pathlib.Path('evidence');E.mkdir(exist_ok=True)
@@ -113,8 +114,9 @@ def deploy(app,action='start'):
 
 def fresh_identity(app):
     d=api('/applications/'+app)
-    assert d['uuid']==app and d['git_repository']==repo and d['git_branch']==branch
-    assert d['git_commit_sha']==sha and d['build_pack']=='dockercompose'
+    checked=identity_checks(d,app,os.environ['GITHUB_REPOSITORY'],branch,sha)
+    save('revision-identity-'+app,{'checks':checked})
+    assert all(checked.values()),'Exact provider source identity mismatch: '+','.join(k for k,v in checked.items() if not v)
     return {k:d[k] for k in ['uuid','git_repository','git_branch','git_commit_sha','build_pack']}
 
 def stop(app):
@@ -161,6 +163,7 @@ def create(name,domain,mode):
     app=api('/applications/public','POST',body)['uuid']
     api('/applications/'+app+'/envs','POST',{'key':'VN_CONTRACT_VOLUME_PREFIX','value':prefix,'is_literal':True,'is_preview':False,'is_buildtime':False})
     assert runtime(app)==[],'Create unexpectedly launched runtime'
+    fresh_identity(app)  # Check source anchor before spending a build.
     return app
 
 try:

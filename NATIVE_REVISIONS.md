@@ -91,3 +91,12 @@ the pinned378ce3735c source,4655–4694). Corrected to is_buildtime=false; runti
 defaults true in the same method. A local AST-based check validates the actual ENV
 request against that vendor allowed-field set before another costly runner boot.
 HTTP errors now retain only status and validation field names, never raw values.
+
+Run43002577130 (b349c5a) passed ENV setup and the old seed deploy, including web/Redis
+HTTP, mounts and pinned artifact creation. It then failed an over-strict raw URL
+comparison at fresh_identity; candidate creation was not reached. Pinned source
+1936–1939 explicitly converts a public GitHub URL to owner/repository + source id0.
+The next correction checks those exact equivalent representations and source
+binding, never suffix/host normalization; branch/commit/UUID remain strict.
+Individual identity outcomes are saved before asserting, including a pre-build
+check immediately after create. No next run is automatically dispatched.
