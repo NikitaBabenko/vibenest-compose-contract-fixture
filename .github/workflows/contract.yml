@@ -1,6 +1,11 @@
 name: Coolify 4.7.5 isolated Compose lifecycle contract
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      scenario:
+        type: choice
+        default: single
+        options: [single, native-revisions]
 permissions:
   contents: read
 concurrency:
@@ -18,7 +23,11 @@ jobs:
       - name: Bootstrap disposable Coolify
         run: python3 bench/bootstrap.py
       - name: Native provider contract
+        if: inputs.scenario != 'native-revisions'
         run: python3 bench/contract.py
+      - name: Native two-resource feasibility
+        if: inputs.scenario == 'native-revisions'
+        run: python3 bench/native_revisions.py
       - name: Collect sanitized evidence
         if: always()
         run: python3 bench/collect.py
