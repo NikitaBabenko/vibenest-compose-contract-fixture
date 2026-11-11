@@ -199,6 +199,9 @@ try:
     assert all(v['external'] is True for v in prepared['volumes'].values())
     prepared_hash=digest(artifact(candidate,'prepared'))
     prepared_images={k:v['image'] for k,v in prepared['services'].items()}
+    # A mutable upstream Redis tag must not silently widen the data-compatibility
+    # assumption of this synthetic recovery experiment.
+    assert prepared_images['redis']==images(old_runtime)['redis'],'Redis image changed; compatibility unproven'
     checkpoint('revision-candidate-prepared',{'identity':fresh_identity(candidate),'runtime':runtime(candidate),'preparedHash':prepared_hash,
         'images':prepared_images,'volumes':volume_names,'oldUntouched':True})
 
