@@ -7,6 +7,7 @@ import subprocess
 import threading
 import time
 import urllib.request
+import urllib.error
 from revision_assertions import writer_trace
 
 assert os.environ.get('GITHUB_ACTIONS')=='true', 'Disposable runner only'
@@ -46,12 +47,22 @@ def api(path,method='GET',data=None):
         headers={'Authorization':'Bearer '+token,'Content-Type':'application/json','Accept':'application/json'},
         data=json.dumps(data).encode() if data is not None else None)
     # No mutation retries or compensation on a lost response.
-    with urllib.request.urlopen(req,timeout=30) as response:
-        raw=response.read().decode()
-        try:return json.loads(raw)
-        except json.JSONDecodeError:
-            if path=='/version':return raw.strip()
-            raise
+    try:
+        with urllib.request.urlopen(req,timeout=30) as response:
+            raw=response.read().decode()
+            try:return json.loads(raw)
+            except json.JSONDecodeError:
+                if path=='/version':return raw.strip()
+                raise
+    except urllib.error.HTTPError as exc:
+        # Record only status/field names, never raw ENV, tokens or error values.
+        fields=[]
+        try:
+            errors=json.loads(exc.read()).get('errors',{})
+            if isinstance(errors,dict):fields=sorted(k for k in errors if k in (data or {}))
+        except (ValueError,AttributeError):pass
+        save('revision-api-refusal',{'method':method,'status':exc.code,'validationFields':fields})
+        raise
 
 def command(mode):
     script='helper' if mode=='build' else 'revisions'
@@ -148,7 +159,7 @@ def create(name,domain,mode):
         'is_preserve_repository_enabled':True,'is_auto_deploy_enabled':False,
         'is_preview_deployments_enabled':False,'instant_deploy':False}
     app=api('/applications/public','POST',body)['uuid']
-    api('/applications/'+app+'/envs','POST',{'key':'VN_CONTRACT_VOLUME_PREFIX','value':prefix,'is_literal':True,'is_preview':False,'is_build_time':False})
+    api('/applications/'+app+'/envs','POST',{'key':'VN_CONTRACT_VOLUME_PREFIX','value':prefix,'is_literal':True,'is_preview':False,'is_buildtime':False})
     assert runtime(app)==[],'Create unexpectedly launched runtime'
     return app
 

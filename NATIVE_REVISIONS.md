@@ -83,3 +83,11 @@ Native docker_cleanup=false prevents asynchronous cleanup during this bounded
 retained-artifact experiment. Candidate create/prepare likewise require no
 containers, including exited ones. These are observations of serialized actions;
 durable platform fencing and admission for future queued commands remain required.
+
+Run43001552784 (04873799) reached ENV creation and failed422 before deployment:
+the fixture incorrectly used is_build_time. The exact provider create_env validator
+accepts is_buildtime and rejects every unknown field (ApplicationsController at
+the pinned378ce3735c source,4655–4694). Corrected to is_buildtime=false; runtime
+defaults true in the same method. A local AST-based check validates the actual ENV
+request against that vendor allowed-field set before another costly runner boot.
+HTTP errors now retain only status and validation field names, never raw values.
