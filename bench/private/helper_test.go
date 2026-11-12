@@ -43,3 +43,25 @@ func TestChildOutputScannerAndBound(t *testing.T) {
 		t.Fatal("output bound bypass")
 	}
 }
+
+func TestBuildFailureProjectsOnlyKnownCodes(t *testing.T) {
+	for _, tc := range []struct {
+		name, stderr, want string
+		timedOut, leak     bool
+	}{
+		{name: "probe", stderr: "#8 0.219 FIXTURE_BUILD_PROBE argument\n", want: "probe-argument"},
+		{name: "bare", stderr: "FIXTURE_BUILD_PROBE transport-env\n", want: "probe-transport-env"},
+		{name: "ambiguous", stderr: "FIXTURE_BUILD_PROBE argument\nFIXTURE_BUILD_PROBE session-path\n", want: "ambiguous-probe"},
+		{name: "command text", stderr: "RUN echo 'FIXTURE_BUILD_PROBE argument'\n", want: "unknown-child-failure"},
+		{name: "extra text", stderr: "#8 0.219 FIXTURE_BUILD_PROBE argument private-detail\n", want: "unknown-child-failure"},
+		{name: "registry", stderr: "failed to resolve source metadata for private-image", want: "base-image-resolution"},
+		{name: "timeout", stderr: "FIXTURE_BUILD_PROBE argument\n", timedOut: true, want: "child-timeout"},
+		{name: "leak", stderr: "FIXTURE_BUILD_PROBE argument\n", leak: true, want: "child-output-leak"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := buildFailure(nil, []byte(tc.stderr), tc.timedOut, tc.leak); got != tc.want {
+				t.Fatalf("buildFailure = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

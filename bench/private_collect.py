@@ -42,6 +42,11 @@ FIXTURE_REFUSALS = frozenset((
 ))
 CURL_EXIT_CODES = {'6':'curl-resolution','7':'curl-connect','22':'curl-http','23':'curl-write',
                    '28':'curl-timeout','35':'curl-tls','60':'curl-ca','63':'curl-size'}
+BUILD_FAILURE_CODES = frozenset((
+    'child-output-leak','child-timeout','ambiguous-probe','probe-argument','probe-artifact-path',
+    'probe-session-path','probe-transport-env','buildx-unavailable','dockerfile-unreadable',
+    'base-image-resolution','daemon-unavailable','disk-exhausted','dockerfile-step-exit','unknown-child-failure',
+))
 PROVIDER_PROGRESS = {
     'Pulling & building required images.':'provider-build',
     'Creating build-time .env file in /artifacts (outside Docker context).':'provider-build-env',
@@ -172,7 +177,7 @@ def classify_native_queue_log(raw, canaries):
         return {'observation':'queue-log-unrecognized'}
     if not isinstance(entries,list) or not 0 < len(entries) <= 2048:
         return {'observation':'queue-log-unrecognized'}
-    progress, refusals, tools = set(), set(), set()
+    progress, refusals, tools, build_failures = set(), set(), set(), set()
     for entry in entries:
         if not isinstance(entry,dict) or entry.get('type') not in ('stdout','stderr') or not isinstance(entry.get('output'),str):
             continue
@@ -190,6 +195,10 @@ def classify_native_queue_log(raw, canaries):
                 code = line.removeprefix('FIXTURE_REFUSAL ')
                 if code in FIXTURE_REFUSALS:
                     refusals.add(code)
+            elif line.startswith('FIXTURE_BUILD_FAILURE '):
+                code = line.removeprefix('FIXTURE_BUILD_FAILURE ')
+                if code in BUILD_FAILURE_CODES:
+                    build_failures.add(code)
             else:
                 scan = re.fullmatch(r'FIXTURE_SCAN ([a-z-]+) [a-f0-9]{64} [0-9]{1,9} leak=(true|false)',line)
                 if scan and scan[1] in FIXTURE_SCAN_STAGES:
@@ -200,8 +209,11 @@ def classify_native_queue_log(raw, canaries):
                 if curl and curl[1] in CURL_EXIT_CODES:
                     tools.add(CURL_EXIT_CODES[curl[1]])
     observation = 'known-refusal' if len(refusals)==1 else 'ambiguous-refusal' if refusals else 'unknown-refusal'
-    return {'observation':observation,'progressCodes':sorted(progress),'refusalCodes':sorted(refusals),
-            'toolCodes':sorted(tools)}
+    result = {'observation':observation,'progressCodes':sorted(progress),'refusalCodes':sorted(refusals),
+              'toolCodes':sorted(tools)}
+    if 'helper-image-build' in refusals and build_failures:
+        result['buildFailureCodes'] = sorted(build_failures)
+    return result
 
 
 def exact_native_queue_evidence(application, deployment, source_sha, canaries):

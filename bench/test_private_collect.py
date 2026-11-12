@@ -158,6 +158,13 @@ class NativeQueueEvidenceTests(unittest.TestCase):
         self.assertEqual(ambiguous['observation'],'ambiguous-refusal')
         self.assertEqual(ambiguous['refusalCodes'],['helper-source-verify','launcher-hash-mismatch'])
 
+    def test_build_code_requires_image_build_refusal_and_refuses_unlisted_content(self):
+        build = 'FIXTURE_BUILD_FAILURE probe-argument'
+        self.assertNotIn('buildFailureCodes',classify_native_queue_log(self.log(build),[]))
+        receipt = classify_native_queue_log(self.log('FIXTURE_REFUSAL helper-image-build',build,
+                                                    'FIXTURE_BUILD_FAILURE raw-private-detail'),[])
+        self.assertEqual(receipt['buildFailureCodes'],['probe-argument'])
+
     def test_exact_queue_read_checks_application_and_deployment_and_projects_terminal_status(self):
         meta=json.dumps({'status':'failed','commitMatches':True,'ignored':'synthetic-private-data'}).encode()
         raw=meta+b'\n'+self.log('FIXTURE_REFUSAL helper-settings-parse')

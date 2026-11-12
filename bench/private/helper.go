@@ -20,6 +20,7 @@ const privateDir = "/tmp/vn-private"
 const reserved = "VN_ARTIFACT_CAPABILITY"
 
 var physicalName = regexp.MustCompile(`^vnprivate[0-9]{1,20}-(web|redis)$`)
+var buildProbe = regexp.MustCompile(`(?m)^(?:#[0-9]+ [0-9]+(?:\.[0-9]+)? )?FIXTURE_BUILD_PROBE (argument|artifact-path|session-path|transport-env)\r?$`)
 
 type NativeSettings struct {
 	SourceFiles          map[string]SourceFile      `json:"sourceFiles"`
@@ -82,6 +83,48 @@ func scanSecrets(data []byte, caps ...string) bool {
 	return false
 }
 
+func buildFailure(stdout, stderr []byte, timedOut, leak bool) string {
+	if leak {
+		return "child-output-leak"
+	}
+	if timedOut {
+		return "child-timeout"
+	}
+	var reason string
+	for _, output := range [][]byte{stdout, stderr} {
+		for _, match := range buildProbe.FindAllSubmatch(output, 5) {
+			code := string(match[1])
+			if reason != "" && reason != code {
+				return "ambiguous-probe"
+			}
+			reason = code
+		}
+	}
+	if reason != "" {
+		return "probe-" + reason
+	}
+	lower := bytes.ToLower(stderr)
+	switch {
+	case bytes.Contains(lower, []byte("buildx component is missing or broken")),
+		bytes.Contains(lower, []byte("requires buildx")):
+		return "buildx-unavailable"
+	case bytes.Contains(lower, []byte("failed to read dockerfile")):
+		return "dockerfile-unreadable"
+	case bytes.Contains(lower, []byte("failed to resolve source metadata")),
+		bytes.Contains(lower, []byte("pull access denied")),
+		bytes.Contains(lower, []byte("toomanyrequests:")):
+		return "base-image-resolution"
+	case bytes.Contains(lower, []byte("cannot connect to the docker daemon")):
+		return "daemon-unavailable"
+	case bytes.Contains(lower, []byte("no space left on device")):
+		return "disk-exhausted"
+	case bytes.Contains(lower, []byte("did not complete successfully: exit code:")):
+		return "dockerfile-step-exit"
+	default:
+		return "unknown-child-failure"
+	}
+}
+
 func (s *helperSession) run(stage string, input []byte, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Minute)
 	defer cancel()
@@ -98,6 +141,9 @@ func (s *helperSession) run(stage string, input []byte, args ...string) ([]byte,
 	// Fixed stage names and digests only; raw child output never reaches logs.
 	fmt.Printf("FIXTURE_SCAN %s %s %d leak=%t\n", stage, Hash(append(bytes.Clone(out.Bytes()), errout.Bytes()...)), out.Len()+errout.Len(), leak)
 	if err != nil || leak {
+		if stage == "user-image-build" {
+			fmt.Fprintln(os.Stderr, "FIXTURE_BUILD_FAILURE", buildFailure(out.Bytes(), errout.Bytes(), ctx.Err() != nil, leak))
+		}
 		return nil, ErrDenied
 	}
 	return bytes.Clone(out.Bytes()), nil
@@ -106,6 +152,9 @@ func (s *helperSession) run(stage string, input []byte, args ...string) ([]byte,
 func (s *helperSession) compose(stage string, extra ...string) ([]byte, error) {
 	cwd, _ := os.Getwd()
 	args := []string{"docker", "compose", "--env-file", privateDir + "/empty.env", "--project-name", s.Manifest.Scope.Application, "--project-directory", cwd, "-f", privateDir + "/effective.json"}
+	if stage == "user-image-build" {
+		args = append(args, "--progress", "plain")
+	}
 	args = append(args, extra...)
 	return s.run(stage, nil, args...)
 }
