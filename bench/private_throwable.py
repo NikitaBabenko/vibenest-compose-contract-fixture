@@ -16,6 +16,10 @@ from private_collect import capture
 INDEX = '/var/www/html/public/index.php'
 INDEX_SHA256 = 'c96ed6bbe80f9105534af4d1510dc79f0143e6843970dba7ddd4ec7d03097cab'
 IMAGE_ID = 'sha256:457b7b700395c0834edb3167a22f3701df440ea8b107293e562aac009fd249b3'
+IMAGE_MANIFEST = 'sha256:cbcdc79b85da8195d17d8925bfd20593cdfb407bf6f3e52cc792ef0447f332c0'
+IMAGE_INDEX = 'sha256:ac2259a438f0221e73eca2838c0c929ff2fd304f8345daabc85c910b6c83d6ee'
+IMAGE_REPRESENTATIONS = {IMAGE_ID: 'config', IMAGE_MANIFEST: 'manifest', IMAGE_INDEX: 'index'}
+PLATFORM = 'linux/amd64'
 PROVIDER_SOURCE_SHA = '378ce3735c4522ebb6b68e93b909b0511f278763'
 IMAGE_ID_PATTERN = r'sha256:[0-9a-f]{64}'
 ANCHOR = b"$app = require_once __DIR__.'/../bootstrap/app.php';\n"
@@ -31,6 +35,8 @@ EXPECTED_FPM = {'fpm': True, 'opcacheEnabled': True, 'timestampValidation': True
 
 class InstallStage(StrEnum):
     IMAGE_INSPECT = 'image-inspect'
+    IMAGE_PLATFORM = 'image-platform'
+    SELECTED_MANIFEST = 'selected-manifest'
     ORIGINAL_INDEX = 'original-index'
     OBSERVER_WRITE = 'observer-write'
     OBSERVER_CHMOD = 'observer-chmod'
@@ -45,6 +51,8 @@ class InstallReason(StrEnum):
     INVALID_DIGEST = 'invalid-digest'
     IDENTITY_MISMATCH = 'identity-mismatch'
     INDEX_ANCHOR_MISMATCH = 'index-anchor-mismatch'
+    DESCRIPTOR_INVALID = 'descriptor-invalid'
+    PLATFORM_MISMATCH = 'platform-mismatch'
 
 
 class ObserverInstallFailure(RuntimeError):
@@ -56,24 +64,30 @@ class ObserverInstallFailure(RuntimeError):
 
 
 def provider_artifact_evidence(path):
+    invalid = {'observation': 'provider-artifact-invalid'}
     try:
         with path.open('rb') as source:
             raw = source.read(4097)
         if len(raw) > 4096:
-            return {'observation': 'provider-artifact-invalid'}
+            return invalid | {'invalidField': 'size'}
         payload = json.loads(raw)
     except OSError:
         return {'observation': 'provider-artifact-unavailable'}
     except ValueError:
-        return {'observation': 'provider-artifact-invalid'}
-    if not isinstance(payload, dict) or payload.get('requestedVersion') != '4.7.5' or payload.get('composeSourceSha') != PROVIDER_SOURCE_SHA:
-        return {'observation': 'provider-artifact-invalid'}
+        return invalid | {'invalidField': 'json'}
+    if not isinstance(payload, dict):
+        return invalid | {'invalidField': 'shape'}
+    if payload.get('requestedVersion') != '4.7.5':
+        return invalid | {'invalidField': 'version'}
+    if payload.get('composeSourceSha') != PROVIDER_SOURCE_SHA:
+        return invalid | {'invalidField': 'source'}
     image_id, repo_digests = payload.get('imageId'), payload.get('repoDigests')
-    if (not isinstance(image_id, str) or not re.fullmatch(IMAGE_ID_PATTERN, image_id) or
-            not isinstance(repo_digests, list) or len(repo_digests) > 8 or any(
-                not isinstance(digest, str) or not re.fullmatch(r'ghcr\.io/coollabsio/coolify@'+IMAGE_ID_PATTERN, digest)
-                for digest in repo_digests)):
-        return {'observation': 'provider-artifact-invalid'}
+    if not isinstance(image_id, str) or not re.fullmatch(IMAGE_ID_PATTERN, image_id):
+        return invalid | {'invalidField': 'image-id'}
+    repo_pattern = r'(?:(?:docker\.io|ghcr\.io)/)?coollabsio/coolify@'+IMAGE_ID_PATTERN
+    if not isinstance(repo_digests, list) or len(repo_digests) > 8 or any(
+            not isinstance(digest, str) or not re.fullmatch(repo_pattern, digest) for digest in repo_digests):
+        return invalid | {'invalidField': 'repo-digests', 'imageId': image_id}
     return {'observation': 'provider-artifact-validated', 'requestedVersion': '4.7.5',
             'composeSourceSha': PROVIDER_SOURCE_SHA, 'imageId': image_id, 'repoDigests': repo_digests}
 
@@ -104,15 +118,42 @@ class TypedCreateObserver:
         self.manifest = json.loads((HERE/'private-throwable-manifest.json').read_text(encoding='utf-8'))
 
     def install(self):
-        proof = {'expectedImageId': IMAGE_ID, 'expectedOriginalIndexSha256': INDEX_SHA256}
+        proof = {'expectedImageConfigDigest': IMAGE_ID, 'expectedImageIndexDigest': IMAGE_INDEX,
+                 'expectedSelectedManifestDigest': IMAGE_MANIFEST, 'expectedOriginalIndexSha256': INDEX_SHA256}
         stage = InstallStage.IMAGE_INSPECT
         try:
             image_id = capture(['docker', 'inspect', 'coolify', '--format', '{{.Image}}'], timeout=10, limit=256).strip()
             if not re.fullmatch(IMAGE_ID_PATTERN.encode(), image_id):
                 raise ObserverInstallFailure(stage, InstallReason.INVALID_DIGEST)
             proof['imageId'] = image_id.decode('ascii')
-            if proof['imageId'] != IMAGE_ID:
+            image_kind = IMAGE_REPRESENTATIONS.get(proof['imageId'])
+            if image_kind is None:
                 raise ObserverInstallFailure(stage, InstallReason.IDENTITY_MISMATCH)
+            proof['imageRepresentation'] = image_kind
+            if image_kind == 'config':
+                stage = InstallStage.IMAGE_PLATFORM
+                platform = capture(['docker', 'image', 'inspect', IMAGE_ID, '--format', '{{.Os}}/{{.Architecture}}'],
+                                   timeout=10, limit=256)
+                if platform.strip() != PLATFORM.encode('ascii'):
+                    raise ObserverInstallFailure(stage, InstallReason.PLATFORM_MISMATCH)
+            else:
+                stage = InstallStage.SELECTED_MANIFEST
+                manifest = capture(['docker', 'inspect', 'coolify', '--format', '{{json .ImageManifestDescriptor}}'],
+                                   timeout=10, limit=4096)
+                try:
+                    descriptor = json.loads(manifest)
+                except ValueError:
+                    descriptor = None
+                digest = descriptor.get('digest') if isinstance(descriptor, dict) else None
+                if not isinstance(digest, str) or not re.fullmatch(IMAGE_ID_PATTERN, digest):
+                    raise ObserverInstallFailure(stage, InstallReason.DESCRIPTOR_INVALID)
+                proof['selectedManifestDigest'] = digest
+                if digest != IMAGE_MANIFEST:
+                    raise ObserverInstallFailure(stage, InstallReason.IDENTITY_MISMATCH)
+                platform = descriptor.get('platform')
+                if not isinstance(platform, dict) or platform.get('os') != 'linux' or platform.get('architecture') != 'amd64':
+                    raise ObserverInstallFailure(stage, InstallReason.PLATFORM_MISMATCH)
+            proof['imagePlatform'] = PLATFORM
 
             stage = InstallStage.ORIGINAL_INDEX
             original = capture(['docker', 'exec', 'coolify', 'cat', INDEX], timeout=10, limit=8192)

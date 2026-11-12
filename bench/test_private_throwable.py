@@ -9,7 +9,8 @@ from unittest.mock import Mock, patch
 
 from private_native import NativeFixture
 from private_throwable import (
-    ANCHOR, DIAGNOSTIC_HEADER, EXPECTED_FPM, IMAGE_ID, PROVIDER_SOURCE_SHA, READY,
+    ANCHOR, DIAGNOSTIC_HEADER, EXPECTED_FPM, IMAGE_ID, IMAGE_INDEX, IMAGE_MANIFEST, INDEX,
+    PLATFORM, PROVIDER_SOURCE_SHA, READY,
     InstallReason, InstallStage, TypedCreateObserver, observed_index, provider_artifact_evidence,
 )
 
@@ -114,9 +115,9 @@ class TypedCreateObserverTests(unittest.TestCase):
 
     def test_each_install_command_failure_records_its_stage_and_skips_post(self):
         original = b'<?php\n'+ANCHOR
-        capture_stages = (InstallStage.IMAGE_INSPECT, InstallStage.ORIGINAL_INDEX, InstallStage.OBSERVER_CHMOD,
+        capture_stages = (InstallStage.IMAGE_INSPECT, InstallStage.IMAGE_PLATFORM, InstallStage.ORIGINAL_INDEX, InstallStage.OBSERVER_CHMOD,
                           InstallStage.OBSERVER_LINT, InstallStage.INDEX_LINT, InstallStage.INDEX_HASH)
-        responses = [IMAGE_ID.encode(), original, b'', b'', b'', b'']
+        responses = [IMAGE_ID.encode(), PLATFORM.encode(), original, b'', b'', b'', b'']
         for index, stage in enumerate(capture_stages):
             with self.subTest(stage=stage):
                 mutated = responses.copy()
@@ -131,10 +132,12 @@ class TypedCreateObserverTests(unittest.TestCase):
                 writes = [None, None]
                 writes[index] = OSError('synthetic-private-error')
                 self.run_failed_install(original, responses, writes, stage, InstallReason.COMMAND_FAILED)
+        self.run_failed_install(original, [IMAGE_INDEX.encode(), RuntimeError('synthetic-private-error')], [],
+                                InstallStage.SELECTED_MANIFEST, InstallReason.COMMAND_FAILED)
 
     def test_identity_failure_reports_only_validated_hashes_and_skips_post(self):
         original = b'<?php\n'+ANCHOR
-        responses = [IMAGE_ID.encode(), original, b'', b'', b'', b'']
+        responses = [IMAGE_ID.encode(), PLATFORM.encode(), original, b'', b'', b'', b'']
         bad_image = self.run_failed_install(original, [b'synthetic-private-error'], [], InstallStage.IMAGE_INSPECT,
                                             InstallReason.INVALID_DIGEST)
         self.assertNotIn('imageId', bad_image)
@@ -146,7 +149,7 @@ class TypedCreateObserverTests(unittest.TestCase):
                                            InstallReason.IDENTITY_MISMATCH, index_sha='a'*64)
         self.assertEqual(evidence['originalIndexSha256'], hashlib.sha256(original).hexdigest())
         missing_anchor = b'<?php\n'
-        self.run_failed_install(missing_anchor, [IMAGE_ID.encode(), missing_anchor], [], InstallStage.ORIGINAL_INDEX,
+        self.run_failed_install(missing_anchor, [IMAGE_ID.encode(), PLATFORM.encode(), missing_anchor], [], InstallStage.ORIGINAL_INDEX,
                                 InstallReason.INDEX_ANCHOR_MISMATCH)
         self.run_failed_install(original, responses, [None, None], InstallStage.INDEX_HASH, InstallReason.INVALID_DIGEST)
         evidence = self.run_failed_install(original, responses[:-1]+[b'c'*64+b'  index.php'], [None, None],
@@ -154,18 +157,56 @@ class TypedCreateObserverTests(unittest.TestCase):
         self.assertEqual(evidence['patchedIndexSha256'], 'c'*64)
         self.assertEqual(evidence['indexLint'], 'passed')
 
+    def test_index_requires_exact_selected_manifest_and_linux_amd64(self):
+        original = b'<?php\n'+ANCHOR
+        expected = {'digest': IMAGE_MANIFEST, 'platform': {'os': 'linux', 'architecture': 'amd64'}}
+        for value, reason in ((None, InstallReason.DESCRIPTOR_INVALID),
+                              (expected | {'digest': 'sha256:'+'d'*64}, InstallReason.IDENTITY_MISMATCH),
+                              (expected | {'platform': {'os': 'linux', 'architecture': 'arm64'}}, InstallReason.PLATFORM_MISMATCH)):
+            with self.subTest(reason=reason):
+                self.run_failed_install(original, [IMAGE_INDEX.encode(), json.dumps(value).encode()], [],
+                                        InstallStage.SELECTED_MANIFEST, reason)
+        self.run_failed_install(original, [IMAGE_ID.encode(), b'linux/arm64'], [], InstallStage.IMAGE_PLATFORM,
+                                InstallReason.PLATFORM_MISMATCH)
+
+    def test_exact_index_manifest_and_config_representations_can_install(self):
+        original = b'<?php\n'+ANCHOR
+        descriptor = json.dumps({'digest': IMAGE_MANIFEST, 'platform': {'os': 'linux', 'architecture': 'amd64'}}).encode()
+        for identity, kind, platform in ((IMAGE_INDEX, 'index', descriptor), (IMAGE_MANIFEST, 'manifest', descriptor),
+                                         (IMAGE_ID, 'config', PLATFORM.encode())):
+            with self.subTest(kind=kind):
+                written = {}
+                responses = iter([identity.encode(), platform, original, b'', b'', b''])
+
+                def capture_response(*args, **kwargs):
+                    if args[0][-2] == 'sha256sum':
+                        return hashlib.sha256(written[INDEX]).hexdigest().encode()
+                    return next(responses)
+
+                with patch('private_throwable.INDEX_SHA256', hashlib.sha256(original).hexdigest()), \
+                     patch('private_throwable.capture', side_effect=capture_response), \
+                     patch('private_throwable.write_provider_file', side_effect=lambda path, body: written.update({path: body})):
+                    proof = TypedCreateObserver().install()
+                self.assertEqual((proof['observation'], proof['imageRepresentation'], proof['imagePlatform']),
+                                 ('typed-install-verified', kind, PLATFORM))
+                self.assertEqual(proof['patchedIndexSha256'], proof['expectedPatchedIndexSha256'])
+
     def test_bootstrap_artifact_projects_only_pinned_validated_fields(self):
         with tempfile.TemporaryDirectory() as temp:
             path = pathlib.Path(temp)/'provider-artifact.json'
             self.assertEqual(provider_artifact_evidence(path), {'observation': 'provider-artifact-unavailable'})
-            digest = 'ghcr.io/coollabsio/coolify@sha256:'+'a'*64
+            digests = [prefix+'coollabsio/coolify@sha256:'+'a'*64 for prefix in ('', 'docker.io/', 'ghcr.io/')]
             safe = {'requestedVersion': '4.7.5', 'composeSourceSha': PROVIDER_SOURCE_SHA, 'imageId': IMAGE_ID,
-                    'repoDigests': [digest]}
+                    'repoDigests': digests}
             path.write_text(json.dumps(safe | {'env': 'synthetic-private-error'}), encoding='utf-8')
             self.assertEqual(provider_artifact_evidence(path), {'observation': 'provider-artifact-validated', **safe})
-            for invalid in (safe | {'repoDigests': ['other/image@sha256:'+'a'*64]},
-                            safe | {'imageId': 'synthetic-private-error'}, safe | {'composeSourceSha': 'b'*40}):
+            for invalid, field in ((safe | {'repoDigests': ['other/image@sha256:'+'a'*64]}, 'repo-digests'),
+                                   (safe | {'imageId': 'synthetic-private-error'}, 'image-id'),
+                                   (safe | {'composeSourceSha': 'b'*40}, 'source')):
                 path.write_text(json.dumps(invalid), encoding='utf-8')
-                self.assertEqual(provider_artifact_evidence(path), {'observation': 'provider-artifact-invalid'})
+                proof = provider_artifact_evidence(path)
+                self.assertEqual(proof['observation'], 'provider-artifact-invalid')
+                self.assertEqual(proof['invalidField'], field)
+                self.assertNotIn('synthetic-private-error', json.dumps(proof))
             path.write_bytes(b'a'*4097)
-            self.assertEqual(provider_artifact_evidence(path), {'observation': 'provider-artifact-invalid'})
+            self.assertEqual(provider_artifact_evidence(path), {'observation': 'provider-artifact-invalid', 'invalidField': 'size'})
