@@ -26,7 +26,21 @@ export GOTOOLCHAIN=local GOENV=off GOPROXY=off GOSUMDB=off GOMAXPROCS=2 CGO_ENAB
 export GOCACHE=/tmp/vn-private-toolchain/cache GOPATH=/tmp/vn-private-toolchain/path
 (cd bench/private && /tmp/vn-private-toolchain/go/bin/go test -p 1 ./... && /tmp/vn-private-toolchain/go/bin/go build -p 1 -trimpath -buildvcs=false -ldflags='-s -w' -o /tmp/vn-private-toolchain/native ./cmd/native)
 python3 -m unittest discover -s bench -p 'test_*.py'
+# Keep the runner's parent directory traversable while bootstrap creates private files with umask 077.
+if [ ! -e /data ] && [ ! -L /data ]; then
+  sudo -n install -d -m 0755 -o root -g root /data
+fi
+if [ -L /data ] || [ ! -d /data ] || [ ! -x /data ]; then
+  echo 'Disposable runner requires a traversable /data directory' >&2
+  exit 65
+fi
 python3 bench/bootstrap.py
+if [ "$(stat -c '%a' /data/coolify/source/.env)" != 600 ] ||
+   [ "$(stat -c '%a' /tmp/coolify-contract-token)" != 600 ] ||
+   [ "$(sudo -n stat -c '%a' /data/coolify/ssh/keys/id.root@host.docker.internal)" != 600 ]; then
+  echo 'Disposable Coolify credential files must be private' >&2
+  exit 65
+fi
 docker build -f bench/private-render.Dockerfile -t vn-private-render:local .
 utility_image=$(docker image inspect --format '{{.Id}}' vn-private-render:local)
 # No legacy collect.py invocation: it is not a private-canary-safe collector.
