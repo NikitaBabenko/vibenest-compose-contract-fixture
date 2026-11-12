@@ -18,7 +18,8 @@ fi
 test ! -e /tmp/vn-private-toolchain
 umask 077
 mkdir /tmp/vn-private-toolchain
-curl -fsS --max-time 120 --proto '=https' https://go.dev/dl/go1.27.4.linux-amd64.tar.gz -o /tmp/vn-private-toolchain/go.tar.gz
+# Fetch the archive from the HTTPS download endpoint, avoiding the go.dev redirect.
+curl -fsS --max-time 120 --proto '=https' https://dl.google.com/go/go1.27.4.linux-amd64.tar.gz -o /tmp/vn-private-toolchain/go.tar.gz
 printf '%s  /tmp/vn-private-toolchain/go.tar.gz\n' 7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840 | sha256sum -c -
 tar -xzf /tmp/vn-private-toolchain/go.tar.gz -C /tmp/vn-private-toolchain
 export GOTOOLCHAIN=local GOENV=off GOPROXY=off GOSUMDB=off GOMAXPROCS=2 CGO_ENABLED=0
