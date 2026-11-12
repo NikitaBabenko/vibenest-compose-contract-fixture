@@ -1,4 +1,4 @@
-import base64, json, os, pathlib, secrets, subprocess, time, urllib.request
+import base64, json, os, pathlib, secrets, stat, subprocess, time, urllib.request
 
 assert os.environ.get('GITHUB_ACTIONS') == 'true', 'Disposable Actions runner only'
 VERSION = '4.7.5'
@@ -18,6 +18,8 @@ for key,val in env.items():
 (root/'source/.env').write_text('\n'.join(f'{k}={v}' for k,v in env.items())+'\n')
 key=root/'ssh/keys/id.root@host.docker.internal'
 run(['ssh-keygen','-q','-t','ed25519','-N','','-f',str(key)])
+if os.environ.get('VN_PRIVATE_DISPOSABLE') == '1' and stat.S_IMODE(key.stat().st_mode) != 0o600:
+    raise RuntimeError('Disposable Coolify SSH bootstrap key must be private')
 run(['sudo','mkdir','-p','/root/.ssh'])
 run(['sudo','cp',str(key)+'.pub','/root/.ssh/authorized_keys'])
 run(['sudo','chmod','600','/root/.ssh/authorized_keys'])

@@ -36,8 +36,7 @@ if [ -L /data ] || [ ! -d /data ] || [ ! -x /data ]; then
 fi
 python3 bench/bootstrap.py
 if [ "$(stat -c '%a' /data/coolify/source/.env)" != 600 ] ||
-   [ "$(stat -c '%a' /tmp/coolify-contract-token)" != 600 ] ||
-   [ "$(sudo -n stat -c '%a' /data/coolify/ssh/keys/id.root@host.docker.internal)" != 600 ]; then
+   [ "$(stat -c '%a' /tmp/coolify-contract-token)" != 600 ]; then
   echo 'Disposable Coolify credential files must be private' >&2
   exit 65
 fi
