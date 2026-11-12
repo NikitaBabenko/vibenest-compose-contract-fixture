@@ -22,6 +22,32 @@ PROVIDER_FILES = (
     'app/Models/Application.php', 'app/Models/ApplicationSetting.php',
     'app/Jobs/LoadComposeFile.php',
 )
+QUEUE_LOG_LIMIT = 1 << 20
+PROVIDER_TERMINAL = frozenset(('finished','failed','cancelled','canceled'))
+PROVIDER_STATUSES = PROVIDER_TERMINAL | {'queued','in_progress'}
+FIXTURE_SCAN_STAGES = frozenset((
+    'renderer','volume-list','volume-create','volume-inspect','native-normalization','user-image-build',
+    'dependency-pull','runtime-normalization','image-pin','writer-absence','retained-image','literal-roundtrip',
+    'frozen-roundtrip','create-without-start','start-after-runner-inspection',
+))
+FIXTURE_REFUSALS = frozenset((
+    'loader-entry','loader-ca-fetch','loader-ca-pin','loader-capability-read','loader-helper-delivery',
+    'loader-helper-pin','loader-helper-exec','helper-entry','helper-workdir','helper-private-directory',
+    'helper-ca-read','helper-tls-client','helper-delivery-read','helper-manifest','helper-binary-pin',
+    'helper-settings-fetch','helper-settings-parse','helper-source-verify','helper-retained-fetch','helper-scrub',
+    'helper-native-normalization','helper-renderer-scrub','helper-delivery-revoke','helper-context-scan',
+    'helper-volume-inventory','helper-renderer-prepare','helper-image-build','helper-dependency-pull',
+    'helper-session-save','helper-start-session','helper-start-prepare','helper-artifact-submit',
+    'helper-release-wait','helper-after-release','helper-runtime-start',
+))
+CURL_EXIT_CODES = {'6':'curl-resolution','7':'curl-connect','22':'curl-http','23':'curl-write',
+                   '28':'curl-timeout','35':'curl-tls','60':'curl-ca','63':'curl-size'}
+PROVIDER_PROGRESS = {
+    'Pulling & building required images.':'provider-build',
+    'Creating build-time .env file in /artifacts (outside Docker context).':'provider-build-env',
+    'Creating build-time environment files in /artifacts (outside Docker context).':'provider-build-env',
+    '/tmp/v: OK':'launcher-hash-verified',
+}
 
 
 def verify_missing_refusal(receipt, *, scope, expected_name, inventory, complete):
@@ -133,6 +159,74 @@ def provider_create_exception(before):
     if len(raw) != length or provider_log_cursor() != after:
         return {'observation': 'cursor-changed'}
     return provider_exception_metadata(raw)
+
+
+def classify_native_queue_log(raw, canaries):
+    if not raw or len(raw) > QUEUE_LOG_LIMIT:
+        return {'observation':'queue-log-unavailable'}
+    if scan_canaries(raw,canaries,surface='hidden-log')['leakDetected']:
+        return {'observation':'queue-log-leak-refused'}
+    try:
+        entries = json.loads(raw)
+    except ValueError:
+        return {'observation':'queue-log-unrecognized'}
+    if not isinstance(entries,list) or not 0 < len(entries) <= 2048:
+        return {'observation':'queue-log-unrecognized'}
+    progress, refusals, tools = set(), set(), set()
+    for entry in entries:
+        if not isinstance(entry,dict) or entry.get('type') not in ('stdout','stderr') or not isinstance(entry.get('output'),str):
+            continue
+        for line in entry['output'].splitlines():
+            line = line.strip()
+            if line in PROVIDER_PROGRESS:
+                progress.add(PROVIDER_PROGRESS[line])
+            elif line.startswith('Preparing container with helper image:'):
+                progress.add('provider-helper-preparation')
+            elif line.startswith('Starting deployment of '):
+                progress.add('provider-deployment-started')
+            elif line == '/tmp/v: FAILED':
+                refusals.add('launcher-hash-mismatch')
+            elif line.startswith('FIXTURE_REFUSAL '):
+                code = line.removeprefix('FIXTURE_REFUSAL ')
+                if code in FIXTURE_REFUSALS:
+                    refusals.add(code)
+            else:
+                scan = re.fullmatch(r'FIXTURE_SCAN ([a-z-]+) [a-f0-9]{64} [0-9]{1,9} leak=(true|false)',line)
+                if scan and scan[1] in FIXTURE_SCAN_STAGES:
+                    progress.add('helper-scan-'+scan[1])
+                    if scan[2]=='true':
+                        refusals.add('helper-child-output-leak')
+                curl = re.match(r'^curl: \(([0-9]{1,2})\)(?: |$)',line)
+                if curl and curl[1] in CURL_EXIT_CODES:
+                    tools.add(CURL_EXIT_CODES[curl[1]])
+    observation = 'known-refusal' if len(refusals)==1 else 'ambiguous-refusal' if refusals else 'unknown-refusal'
+    return {'observation':observation,'progressCodes':sorted(progress),'refusalCodes':sorted(refusals),
+            'toolCodes':sorted(tools)}
+
+
+def exact_native_queue_evidence(application, deployment, source_sha, canaries):
+    if (not re.fullmatch(r'[A-Za-z0-9]{1,64}',application) or not re.fullmatch(r'[A-Za-z0-9]{1,64}',deployment) or
+            not re.fullmatch(r'[a-f0-9]{40}',source_sha)):
+        return {'observation':'queue-scope-invalid'}
+    prefix = 'require "vendor/autoload.php"; $app=require "bootstrap/app.php"; $app->make(Illuminate\\Contracts\\Console\\Kernel::class)->bootstrap(); '
+    php = prefix + (
+        f"$a=App\\Models\\Application::where('uuid','{application}')->sole(); "
+        f"$q=App\\Models\\ApplicationDeploymentQueue::where('application_id',$a->id)->where('deployment_uuid','{deployment}')->sole(); "
+        f"echo json_encode(['status'=>$q->getRawOriginal('status'),'commitMatches'=>$q->getRawOriginal('commit')==='{source_sha}']),\"\\n\"; "
+        f"$logs=$q->getRawOriginal('logs'); if(is_string($logs)&&strlen($logs)<={QUEUE_LOG_LIMIT}) echo $logs;"
+    )
+    try:
+        raw = capture(['docker','exec','coolify','php','-r',php],timeout=10,limit=QUEUE_LOG_LIMIT+1024)
+        meta, separator, logs = raw.partition(b'\n')
+        proof = json.loads(meta)
+    except (OSError,RuntimeError,ValueError,subprocess.TimeoutExpired):
+        return {'observation':'queue-read-unavailable'}
+    if not separator or not isinstance(proof,dict) or type(proof.get('commitMatches')) is not bool:
+        return {'observation':'queue-read-invalid'}
+    status = proof.get('status')
+    return {'observation':'exact-queue-row','sourceCommitMatches':proof['commitMatches'],
+            'queueStatus':status if isinstance(status,str) and status in PROVIDER_STATUSES else 'unknown',
+            'log':classify_native_queue_log(logs,canaries)}
 
 
 def scan_stream(args, canaries, surface, limit=1 << 30):

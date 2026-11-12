@@ -16,6 +16,11 @@ on:
         type: boolean
         required: false
         default: false
+      diagnose_prepare:
+        description: Run only the first native prepare and collect bounded failure evidence
+        type: boolean
+        required: false
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -46,7 +51,9 @@ jobs:
           VN_PRIVATE_DISPOSABLE: '1'
           VN_PRIVATE_REVIEWED_SHA: ${{ inputs.reviewed_sha }}
           VN_PRIVATE_TYPED_DIAGNOSTIC: ${{ inputs.diagnose_create && '1' || '0' }}
+          VN_PRIVATE_PREPARE_DIAGNOSTIC: ${{ inputs.diagnose_prepare && '1' || '0' }}
         run: |
+          [[ "$VN_PRIVATE_TYPED_DIAGNOSTIC$VN_PRIVATE_PREPARE_DIAGNOSTIC" != 11 ]]
           [[ "$VN_PRIVATE_REVIEWED_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$VN_PRIVATE_REVIEWED_SHA" = "$GITHUB_SHA"
           bash bench/run-private-native.sh

@@ -1,5 +1,7 @@
 #!/bin/sh
 set -eu
+stage=loader-entry
+trap 'if [ "$?" -ne 0 ]; then printf "FIXTURE_REFUSAL %s\n" "$stage" >&2; fi' 0
 set +a
 unset VN_ARTIFACT_CAPABILITY
 umask 077
@@ -15,9 +17,12 @@ case "$helper_size" in ''|*[!0-9]*) exit 64 ;; esac
 test "$helper_size" -gt 0 && test "$helper_size" -le 16777216
 test ! -e /tmp/vn-private
 mkdir -m 700 /tmp/vn-private
+stage=loader-ca-fetch
 curl -q -fsS --noproxy '*' --max-time 20 --max-filesize 8192 --proto '=http' "$ca_url" -o /tmp/vn-private/ca.pem
+stage=loader-ca-pin
 printf '%s  /tmp/vn-private/ca.pem\n' "$ca_digest" | sha256sum -c - >/dev/null
 # Read exactly one reserved scalar; never source provider/user ENV as shell code.
+stage=loader-capability-read
 capability=$(awk -F= '$1=="VN_ARTIFACT_CAPABILITY" {n++; v=substr($0,index($0,"=")+1)} END {if(n!=1) exit 1; print v}' /artifacts/build-time.env)
 case "$capability" in \"*\") capability=${capability#\"}; capability=${capability%\"} ;; \'*\') capability=${capability#\'}; capability=${capability%\'} ;; esac
 test "${#capability}" = 64
@@ -25,6 +30,7 @@ case "$capability" in *[!a-f0-9]*) exit 64 ;; esac
 printf '%s' "$capability" > /tmp/vn-private/delivery
 printf 'header = "Authorization: Bearer %s"\nheader = "X-Fixture-Deployment: %s"\n' "$capability" "$deployment" > /tmp/vn-private/curl.cfg
 unset capability
+stage=loader-helper-delivery
 attempt=0
 while :; do
   attempt=$((attempt+1))
@@ -33,7 +39,9 @@ while :; do
   sleep 1
 done
 rm /tmp/vn-private/curl.cfg
+stage=loader-helper-pin
 test "$(wc -c < /tmp/vn-private/helper | tr -d ' ')" = "$helper_size"
 printf '%s  /tmp/vn-private/helper\n' "$helper_digest" | sha256sum -c - >/dev/null
 chmod 700 /tmp/vn-private/helper
+stage=loader-helper-exec
 exec /tmp/vn-private/helper helper --phase=load --origin="$origin"

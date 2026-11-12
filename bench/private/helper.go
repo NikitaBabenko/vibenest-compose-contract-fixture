@@ -398,56 +398,73 @@ func (s *helperSession) scanContext() error {
 	})
 }
 
-func RunHelper(phase, origin string) error {
+func RunHelper(phase, origin string) (result error) {
+	stage := "helper-entry"
+	defer func() {
+		if result != nil {
+			fmt.Fprintln(os.Stderr, "FIXTURE_REFUSAL", stage)
+		}
+	}()
 	if os.Getenv("GOOS") == "windows" {
 		return ErrDenied
 	}
 	_ = os.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	stage = "helper-workdir"
 	cwd, err := os.Getwd()
 	if err != nil || filepath.Dir(cwd) != "/artifacts" || !atom.MatchString(filepath.Base(cwd)) {
 		return ErrDenied
 	}
+	stage = "helper-private-directory"
 	info, err := os.Lstat(privateDir)
 	if err != nil || !info.IsDir() || info.Mode().Perm() != 0700 {
 		return ErrDenied
 	}
+	stage = "helper-ca-read"
 	ca, err := os.ReadFile(privateDir + "/ca.pem")
 	if err != nil {
 		return ErrDenied
 	}
 	var s helperSession
 	if phase == "load" {
+		stage = "helper-tls-client"
 		client, err := NewClient(origin, ca)
 		if err != nil {
 			return err
 		}
+		stage = "helper-delivery-read"
 		token, err := os.ReadFile(privateDir + "/delivery")
 		if err != nil {
 			return ErrDenied
 		}
 		s.Origin = origin
 		s.Delivery = string(token)
+		stage = "helper-manifest"
 		s.Manifest, err = client.Bootstrap(s.Delivery, filepath.Base(cwd))
 		if err != nil {
 			return ErrDenied
 		}
+		stage = "helper-binary-pin"
 		self, err := os.ReadFile(privateDir + "/helper")
 		if err != nil || Hash(self) != s.Manifest.Scope.HelperDigest {
 			return ErrDenied
 		}
 		slot := s.Manifest.Slots["settings"]
+		stage = "helper-settings-fetch"
 		settings, err := client.Fetch(s.Delivery, s.Manifest.Scope, "settings", slot.Digest, slot.Size)
 		if err != nil {
 			return err
 		}
+		stage = "helper-settings-parse"
 		s.Settings, err = parseSettings(settings)
 		if err != nil {
 			return err
 		}
+		stage = "helper-source-verify"
 		if err = s.verifyNativeSource(); err != nil {
 			return err
 		}
 		if s.Settings.Mode != "prepare" {
+			stage = "helper-retained-fetch"
 			slot := s.Manifest.Slots["runtime"]
 			data, err := client.Fetch(s.Delivery, s.Manifest.Scope, "runtime", slot.Digest, slot.Size)
 			if err != nil || !exactArtifact(data) {
@@ -460,6 +477,7 @@ func RunHelper(phase, origin string) error {
 			s.Config = a.EffectiveConfig
 			s.Images = a.Images
 		}
+		stage = "helper-scrub"
 		if err = s.scrub(); err != nil {
 			return err
 		}
@@ -471,10 +489,12 @@ func RunHelper(phase, origin string) error {
 		}
 		// Resolve native YAML without runtime .env; scrub generated ARG references
 		// and overwrite only the provider-generated config, never application source.
+		stage = "helper-native-normalization"
 		raw, err := s.run("native-normalization", nil, "docker", "compose", "--env-file", "/artifacts/build-time.env", "--project-name", s.Manifest.Scope.Application, "--project-directory", cwd, "-f", "private-compose.yaml", "config", "--no-env-resolution", "--format", "json")
 		if err != nil {
 			return err
 		}
+		stage = "helper-renderer-scrub"
 		rendered, err := s.render("scrub", raw, nil, nil)
 		if err != nil {
 			return err
@@ -483,16 +503,20 @@ func RunHelper(phase, origin string) error {
 		if err != nil || os.WriteFile("private-compose.yaml", safe, 0600) != nil {
 			return ErrDenied
 		}
+		stage = "helper-delivery-revoke"
 		if err = client.Revoke(s.Delivery, s.Manifest.Scope); err != nil {
 			return err
 		}
+		stage = "helper-context-scan"
 		if err = s.scanContext(); err != nil {
 			return err
 		}
+		stage = "helper-volume-inventory"
 		if err = s.inventoryVolumes(s.Settings.VolumeMode == "NewCreate"); err != nil {
 			return err
 		}
 		if s.Settings.Mode == "prepare" {
+			stage = "helper-renderer-prepare"
 			prepared, err := s.render("prepare", rendered["config"], nil, nil)
 			if err != nil {
 				return err
@@ -501,17 +525,21 @@ func RunHelper(phase, origin string) error {
 			if err != nil || writePrivate("effective.json", safe) != nil {
 				return ErrDenied
 			}
+			stage = "helper-image-build"
 			if _, err = s.compose("user-image-build", "build", "--no-cache"); err != nil {
 				return err
 			}
 			if s.Settings.RedisImage == "" {
+				stage = "helper-dependency-pull"
 				if _, err = s.compose("dependency-pull", "pull", "--ignore-buildable"); err != nil {
 					return err
 				}
 			}
 		}
+		stage = "helper-session-save"
 		return s.save()
 	}
+	stage = "helper-start-session"
 	if phase != "start" {
 		return ErrDenied
 	}
@@ -526,6 +554,7 @@ func RunHelper(phase, origin string) error {
 	if s.Manifest.Scope.Deployment != filepath.Base(cwd) {
 		return ErrDenied
 	}
+	stage = "helper-start-prepare"
 	if s.Settings.Mode == "prepare" {
 		raw, err := s.run("runtime-normalization", nil, "docker", "compose", "--project-name", s.Manifest.Scope.Application, "--project-directory", cwd, "-f", "private-compose.yaml", "config", "--format", "json")
 		if err != nil {
@@ -620,9 +649,11 @@ func RunHelper(phase, origin string) error {
 	}
 	artifact := RuntimeArtifact{1, s.Manifest.Scope, s.Config, Hash(s.Config), s.Images}
 	data, _ := json.Marshal(artifact)
+	stage = "helper-artifact-submit"
 	if _, err = client.Submit(s.Manifest.Submission, s.Manifest.Scope, data); err != nil {
 		return ErrDenied
 	}
+	stage = "helper-release-wait"
 	{
 		deadline := time.Now().Add(90 * time.Second)
 		released := false
@@ -641,6 +672,7 @@ func RunHelper(phase, origin string) error {
 			return ErrDenied
 		}
 	}
+	stage = "helper-after-release"
 	if err = client.Revoke(s.Manifest.Submission, s.Manifest.Scope); err != nil {
 		return err
 	}
@@ -650,6 +682,7 @@ func RunHelper(phase, origin string) error {
 		return ErrDenied
 	}
 	if s.Settings.Mode != "prepare" {
+		stage = "helper-runtime-start"
 		_, err = s.compose("start-after-runner-inspection", "start", "--wait", "--wait-timeout", "20")
 		if err != nil {
 			return err

@@ -129,5 +129,14 @@ class PrivateCommandTests(unittest.TestCase):
                     'restoredBootstrapVerified':True,
                 }))
 
+    def test_loader_failure_emits_only_fixed_refusal_and_preserves_exit(self):
+        shell=os.environ.get('VN_FIXTURE_TEST_SHELL') or shutil.which('sh')
+        if not shell:
+            self.skipTest('POSIX shell unavailable')
+        loader=subprocess.run([shell,'-s','--','synthetic-private-argument'],input=LOADER_PATH.read_bytes(),
+                              capture_output=True,timeout=10)
+        self.assertNotEqual(loader.returncode,0)
+        self.assertEqual(loader.stderr.strip(),b'FIXTURE_REFUSAL loader-entry')
+
 
 if __name__=='__main__':unittest.main()

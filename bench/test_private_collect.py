@@ -3,7 +3,10 @@ import hashlib
 import json
 import unittest
 from unittest.mock import patch
-from private_collect import provider_create_exception, provider_exception_metadata, verify_missing_refusal
+from private_collect import (
+    QUEUE_LOG_LIMIT, classify_native_queue_log, exact_native_queue_evidence,
+    provider_create_exception, provider_exception_metadata, verify_missing_refusal,
+)
 
 
 class MissingRefusalTests(unittest.TestCase):
@@ -124,6 +127,52 @@ class ProviderExceptionTests(unittest.TestCase):
                 self.assertEqual(provider_create_exception(before), expected)
                 self.assertEqual(read.call_args.args[0][-2:], [str(before[1]), str(len(raw))])
                 self.assertEqual(read.call_args.kwargs['limit'], 65536)
+
+
+class NativeQueueEvidenceTests(unittest.TestCase):
+    def log(self, *lines):
+        return json.dumps([{'type':'stderr','output':line,'hidden':True,'command':'FIXTURE_REFUSAL loader-entry'}
+                           for line in lines]).encode()
+
+    def test_queue_log_exports_only_allowlisted_progress_refusal_and_tool_codes(self):
+        raw=self.log('Preparing container with helper image: synthetic-private-reference',
+                     'Pulling & building required images.', '/tmp/v: OK',
+                     'FIXTURE_SCAN native-normalization '+'a'*64+' 123 leak=false',
+                     'curl: (28) synthetic-private-endpoint', 'FIXTURE_REFUSAL loader-helper-delivery',
+                     'FIXTURE_REFUSAL synthetic-private-code', 'curl: (99) synthetic-private-endpoint')
+        self.assertEqual(classify_native_queue_log(raw,[]),{
+            'observation':'known-refusal',
+            'progressCodes':['helper-scan-native-normalization','launcher-hash-verified','provider-build','provider-helper-preparation'],
+            'refusalCodes':['loader-helper-delivery'],'toolCodes':['curl-timeout'],
+        })
+
+    def test_queue_log_refuses_canary_or_oversize_and_marks_unknown_or_ambiguous(self):
+        canary='f'*64
+        self.assertEqual(classify_native_queue_log(self.log('FIXTURE_REFUSAL helper-manifest',canary),[canary]),
+                         {'observation':'queue-log-leak-refused'})
+        self.assertEqual(classify_native_queue_log(b'x'*(QUEUE_LOG_LIMIT+1),[]),{'observation':'queue-log-unavailable'})
+        self.assertEqual(classify_native_queue_log(b'invalid',[]),{'observation':'queue-log-unrecognized'})
+        unknown=classify_native_queue_log(self.log('unrecognized synthetic error'),[])
+        self.assertEqual(unknown,{'observation':'unknown-refusal','progressCodes':[],'refusalCodes':[],'toolCodes':[]})
+        ambiguous=classify_native_queue_log(self.log('FIXTURE_REFUSAL helper-source-verify','/tmp/v: FAILED'),[])
+        self.assertEqual(ambiguous['observation'],'ambiguous-refusal')
+        self.assertEqual(ambiguous['refusalCodes'],['helper-source-verify','launcher-hash-mismatch'])
+
+    def test_exact_queue_read_checks_application_and_deployment_and_projects_terminal_status(self):
+        meta=json.dumps({'status':'failed','commitMatches':True,'ignored':'synthetic-private-data'}).encode()
+        raw=meta+b'\n'+self.log('FIXTURE_REFUSAL helper-settings-parse')
+        with patch('private_collect.capture',return_value=raw) as read:
+            receipt=exact_native_queue_evidence('testapp','testdeployment','a'*40,[])
+            self.assertEqual(receipt,{'observation':'exact-queue-row','sourceCommitMatches':True,'queueStatus':'failed',
+                                     'log':{'observation':'known-refusal','progressCodes':[],
+                                            'refusalCodes':['helper-settings-parse'],'toolCodes':[]}})
+            command=read.call_args.args[0][-1]
+            self.assertIn("where('application_id',$a->id)->where('deployment_uuid','testdeployment')->sole()",command)
+            self.assertEqual(read.call_args.kwargs['limit'],QUEUE_LOG_LIMIT+1024)
+        with patch('private_collect.capture') as read:
+            self.assertEqual(exact_native_queue_evidence("bad'",'testdeployment','a'*40,[]),
+                             {'observation':'queue-scope-invalid'})
+            read.assert_not_called()
 
 
 if __name__ == '__main__': unittest.main()

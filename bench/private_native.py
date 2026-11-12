@@ -18,7 +18,8 @@ import urllib.request
 
 from private_commands import MAX_STORED_COMMAND, START_COMMAND, bootstrap_command
 from private_collect import (
-    capture, full_provider_logs, image_evidence, observe_helper, provider_create_exception,
+    PROVIDER_STATUSES, PROVIDER_TERMINAL, capture, exact_native_queue_evidence, full_provider_logs,
+    image_evidence, observe_helper, provider_create_exception,
     provider_log_cursor, verify_missing_refusal,
 )
 from private_leaks import scan_canaries
@@ -81,6 +82,7 @@ class Broker:
 class NativeFixture:
     def __init__(self, executable, utility_image):
         self.sha = preflight(); self.utility_image = utility_image
+        self.prepare_diagnostic=os.environ.get('VN_PRIVATE_PREPARE_DIAGNOSTIC')=='1'
         self.evidence = pathlib.Path('evidence/private'); self.evidence.mkdir(parents=True,exist_ok=True)
         self.private = pathlib.Path('/tmp/vn-private-runner'); self.private.mkdir(mode=0o700,exist_ok=False)
         self.token = pathlib.Path('/tmp/coolify-contract-token').read_text().strip()
@@ -372,24 +374,33 @@ class NativeFixture:
             raise RuntimeError('Native dispatch binding failed')
         self.scopes.append(scope);self.save('dispatch-'+deployment,{'scope':scope,'mode':mode})
         released=False;artifact=None;terminal=None
+        phase='provider-poll';provider_status='unknown';artifact_opened=False;failure_code=None
         try:
             for _ in range(240):
+                phase='provider-poll'
                 status=self.api('/deployments/'+deployment)
+                observed_status=status.get('status')
+                provider_status=observed_status if isinstance(observed_status,str) and observed_status in PROVIDER_STATUSES else 'unknown'
                 if not released:
+                    phase='broker-artifact-open'
                     opened=self.broker.call(op='open',scope=scope)
                     if opened.get('ok'):
+                        artifact_opened=True
                         if expected_missing_volume is not None: raise RuntimeError('Missing-retained target produced runtime artifact')
+                        phase='native-source-readback'
                         commit=self.php("$q=App\\Models\\ApplicationDeploymentQueue::where('deployment_uuid','"+deployment+"')->sole();echo json_encode(['commit'=>$q->commit]);")
                         if json.loads(commit).get('commit')!=self.sha: raise RuntimeError('Actual native checkout commit mismatch')
                         self.save('source-'+deployment,{'queueCommit':self.sha,'manifestDigest':digest(encoded(self.source_files)),
                             'sourceFileCount':len(self.source_files),'generatedAllowlist':['private-compose.yaml','private-app/Dockerfile'],
                             'dockerfileOriginalDigest':self.dockerfile_body_digest,'nativeCloneOnly':True})
+                        phase='native-cli-readback'
                         compose_version=capture(['docker','exec',deployment,'docker','compose','version','--short']).decode().strip()
                         engine_version=capture(['docker','version','--format','{{.Server.Version}}']).decode().strip()
                         if not re.fullmatch(r'v?[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?',compose_version): raise RuntimeError('Unknown actual Compose binary')
                         self.save('native-cli-'+deployment,{'composeVersion':compose_version,'engineVersion':engine_version,
                             'configFlags':['--env-file','/tmp/vn-private/empty.env','--project-name',app,'--project-directory','/artifacts/'+deployment,'-f','/tmp/vn-private/effective.json'],
                             'createFlags':['create','--no-build','--pull','never']})
+                        phase='native-helper-inspection'
                         artifact=opened['artifact'];self.scans.extend(observe_helper(deployment,self.canaries))
                         if mode=='prepare':
                             if read_containers(app): raise RuntimeError('Preparation launched runtime')
@@ -400,12 +411,16 @@ class NativeFixture:
                             self.save('prestart-'+deployment,gate)
                             if self.volumes_snapshot()!=self.observations: raise RuntimeError('Retained storage changed before gate')
                         if any(s['leakDetected'] for s in self.scans): raise RuntimeError('Capability leak detected')
+                        phase='broker-release'
                         if not self.broker.call(op='release',scope=scope).get('ok'): raise RuntimeError('Fixture release refused')
                         released=True
-                if status.get('status') in ('finished','failed','cancelled','canceled'):
-                    terminal=status['status'];break
+                if provider_status in PROVIDER_TERMINAL:
+                    terminal=provider_status;break
                 time.sleep(2)
-            if terminal is None: raise RuntimeError('Native outcome unknown; no retry')
+            phase='provider-terminal-validation'
+            if terminal is None:
+                failure_code='provider-terminal-unknown'
+                raise RuntimeError('Native outcome unknown; no retry')
             if expected_missing_volume is not None:
                 if released or terminal!='failed' or read_containers(app): raise RuntimeError('Expected pre-start refusal not observed')
                 refusal=self.broker.call(op='refusal',scope=scope)
@@ -415,13 +430,16 @@ class NativeFixture:
                     expected_name=expected_missing_volume,inventory=names,complete=True)
                 self.save('missing-retained-refusal-'+deployment,verified)
             elif not released or terminal!=('failed' if mode=='fault' else 'finished'):
+                failure_code='provider-terminal-before-artifact' if not artifact_opened else 'provider-terminal-unexpected'
                 raise RuntimeError('Native outcome did not match fixture phase')
             # A --rm helper must disappear; retained state cannot live in its FS.
+            phase='helper-removal'
             for _ in range(30):
                 names=capture(['docker','ps','-a','--format','{{.Names}}']).decode().splitlines()
                 if deployment not in names: break
                 time.sleep(1)
             else: raise RuntimeError('Native helper was preserved')
+            phase='volume-inventory'
             volume_names=sorted(capture(['docker','volume','ls','-q']).decode().split())
             self.save('volume-inventory-'+deployment,{'beforeInitial':self.initial_volume_names,'after':volume_names,
                 'addedSinceInitial':sorted(set(volume_names)-set(self.initial_volume_names)),'assigned':self.expected_volume_names})
@@ -431,11 +449,23 @@ class NativeFixture:
                 'configDigest':artifact['effectiveConfigDigest'] if artifact else None,
                 'images':artifact['images'] if artifact else None})
             self.save('result',self.result)
+            phase='accepted'
             return scope,artifact
+        except Exception:
+            failure_code=failure_code or 'phase-check-failed'
+            raise
         finally:
             # Revocation never requires cleanup API success. No automatic launch.
-            self.broker.call(op='revoke',capability=grants['delivery'])
-            self.broker.call(op='revoke',capability=grants['submission'])
+            try:
+                try:
+                    self.broker.call(op='revoke',capability=grants['delivery'])
+                finally:
+                    self.broker.call(op='revoke',capability=grants['submission'])
+            finally:
+                if failure_code or self.prepare_diagnostic:
+                    self.save('native-job-'+deployment,{'phase':phase,'failureCode':failure_code,
+                        'providerApiStatus':provider_status,'terminalStatus':terminal,'artifactOpened':artifact_opened,
+                        'released':released,'queue':exact_native_queue_evidence(app,deployment,self.sha,self.canaries)})
 
     def stop(self, app):
         self.identity(app);self.api('/applications/'+app+'/stop','POST',{'docker_cleanup':False})
@@ -477,6 +507,9 @@ class NativeFixture:
             self.command_api_boundaries(old)
             self.stage('prepare-old-native-new-storage')
             retained,old_artifact=self.job(old,'private-old.contract.localhost','prepare',new=True)
+            if self.prepare_diagnostic:
+                self.result['prepareDiagnostic']='first-prepare-accepted'
+                return
             self.observations=self.volumes_snapshot()
             self.stage('activate-old-fresh-helper')
             self.env(old,'FIXTURE_LITERAL','changed-'+secrets.token_hex(24),runtime=True)
