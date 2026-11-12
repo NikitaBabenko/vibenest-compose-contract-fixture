@@ -14,6 +14,11 @@ KEY = re.compile(r'[a-z0-9]+(?:-[a-z0-9]+)*\Z')
 UUID = re.compile(r'[a-z0-9]{8,64}\Z')
 IMAGE = re.compile(r'sha256:[a-f0-9]{64}\Z')
 TOPOLOGY = {'web': ('app-data', '/app/data'), 'redis': ('redis-data', '/data')}
+ABSOLUTE_BIND = re.compile(r'^(?:[/\\]|[A-Za-z]:[/\\])')
+
+
+class PrestartRefusal(ValueError):
+    pass
 
 
 def canonical_digest(value):
@@ -100,47 +105,72 @@ def prestart_gate(containers, *, application, bindings, images, limits):
     Quiescence, fresh retained inventory and delivery revocation are separate.
     """
     if len(containers) != 2 or set(images) != set(TOPOLOGY) or set(limits) != set(TOPOLOGY):
-        raise ValueError('Incomplete pre-start evidence')
+        raise PrestartRefusal('prestart-container-count-or-plan')
     if len(bindings) != 2 or {b['service'] for b in bindings} != set(TOPOLOGY):
-        raise ValueError('Incomplete bindings')
+        raise PrestartRefusal('prestart-binding-plan')
     by_service = {b['service']: b for b in bindings}
     seen = set()
+    mount_representations = {}
     for row in containers:
         config, hostconfig, state = row['Config'], row['HostConfig'], row['State']
         labels = config['Labels']
         service = labels.get('com.docker.compose.service')
         if service not in TOPOLOGY or service in seen or labels.get('com.docker.compose.project') != application:
-            raise ValueError('Unexpected container identity')
+            raise PrestartRefusal('prestart-container-identity')
         seen.add(service)
         expected_image = images[service]
         if not IMAGE.fullmatch(expected_image) or row['Image'] != expected_image:
-            raise ValueError('Image identity mismatch')
+            raise PrestartRefusal('prestart-image-identity')
         if state.get('Status') != 'created' or state.get('Running') is not False or state.get('Restarting') is not False:
-            raise ValueError('Container already started or state unknown')
+            raise PrestartRefusal('prestart-container-state')
         if state.get('StartedAt') not in {'0001-01-01T00:00:00Z', '0001-01-01T00:00:00.000000000Z'}:
-            raise ValueError('Container has start history')
-        if (hostconfig.get('PortBindings') not in ({}, None) or hostconfig.get('PublishAllPorts') is not False or
-                hostconfig.get('Privileged') is not False or not isinstance(hostconfig.get('NetworkMode'), str) or
-                hostconfig['NetworkMode'] in {'', 'host', 'none'} or hostconfig['NetworkMode'].startswith('container:') or
-                hostconfig.get('Binds') not in (None, []) or hostconfig.get('Devices') not in (None, []) or
+            raise PrestartRefusal('prestart-start-history')
+        if hostconfig.get('PortBindings') not in ({}, None) or hostconfig.get('PublishAllPorts') is not False:
+            raise PrestartRefusal('prestart-port-publication')
+        network = hostconfig.get('NetworkMode')
+        if not isinstance(network, str) or network in {'', 'host', 'none'} or network.startswith('container:'):
+            raise PrestartRefusal('prestart-network-mode')
+        if (hostconfig.get('Privileged') is not False or hostconfig.get('Devices') not in (None, []) or
                 hostconfig.get('DeviceRequests') not in (None, []) or hostconfig.get('CapAdd') not in (None, []) or
                 hostconfig.get('PidMode') not in (None, '') or hostconfig.get('IpcMode') == 'host'):
-            raise ValueError('Unexpected host exposure')
+            raise PrestartRefusal('prestart-host-exposure')
         memory, cpus, pids = limits[service]
-        if (not all(isinstance(v, int) and not isinstance(v, bool) and v > 0 for v in (memory, cpus, pids)) or
-                hostconfig.get('Memory') != memory or type(hostconfig.get('MemorySwap')) is not int or
-                hostconfig['MemorySwap'] != memory or hostconfig.get('NanoCpus') != cpus or hostconfig.get('PidsLimit') != pids):
-            raise ValueError('Resource limit mismatch')
+        if not all(type(value) is int and value > 0 for value in (memory, cpus, pids)):
+            raise PrestartRefusal('prestart-resource-plan')
+        if hostconfig.get('Memory') != memory:
+            raise PrestartRefusal('prestart-memory-limit')
+        if type(hostconfig.get('MemorySwap')) is not int or hostconfig['MemorySwap'] != memory:
+            raise PrestartRefusal('prestart-memory-swap-limit')
+        if hostconfig.get('NanoCpus') != cpus:
+            raise PrestartRefusal('prestart-cpu-limit')
+        if hostconfig.get('PidsLimit') != pids:
+            raise PrestartRefusal('prestart-pids-limit')
         if service == 'web' and config.get('User') not in {'node', '1000', '1000:1000', 'node:node'}:
-            raise ValueError('SQLite web must be non-root')
+            raise PrestartRefusal('prestart-sqlite-user')
         mounts = row.get('Mounts', [])
         binding = by_service[service]
+        name, destination, read_only = binding['physicalName'], binding['destination'], binding['readOnly']
+        if not isinstance(name, str) or not KEY.fullmatch(name) or destination != TOPOLOGY[service][1] or type(read_only) is not bool:
+            raise PrestartRefusal('prestart-binding-plan')
+        binds = hostconfig.get('Binds')
+        # Compose 5.6.1 uses HostConfig.Binds for ordinary named volumes.
+        # Require the entire tuple and independently verify the engine mount.
+        mount_representations[service] = 'no-legacy-bind'
+        if binds not in (None, []):
+            access = 'ro' if read_only else 'rw'
+            if binds != [f'{name}:{destination}:{access}']:
+                if isinstance(binds, list) and any(isinstance(b, str) and ABSOLUTE_BIND.match(b) for b in binds):
+                    raise PrestartRefusal('prestart-absolute-host-bind')
+                raise PrestartRefusal('prestart-unexpected-bind')
+            if hostconfig.get('Mounts') not in (None, []):
+                raise PrestartRefusal('prestart-ambiguous-mount-spec')
+            mount_representations[service] = 'exact-named-bind'
         if (len(mounts) != 1 or mounts[0].get('Type') != 'volume' or
-                mounts[0].get('Name') != binding['physicalName'] or
-                mounts[0].get('Destination') != binding['destination'] or
-                mounts[0].get('RW') is not (not binding['readOnly'])):
-            raise ValueError('Actual mount differs from verified binding')
+                mounts[0].get('Name') != name or mounts[0].get('Destination') != destination or
+                mounts[0].get('RW') is not (not read_only)):
+            raise PrestartRefusal('prestart-engine-mount')
     return {'checkedServices': sorted(seen), 'inspectionDigest': canonical_digest(containers),
+            'mountRepresentations': mount_representations,
             'productionStartAuthorized': False}
 
 

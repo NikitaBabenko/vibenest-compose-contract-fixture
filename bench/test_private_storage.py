@@ -1,6 +1,6 @@
 import copy
 import unittest
-from private_storage import (PROVIDER_COMMIT, canonical_digest, normalize_bindings,
+from private_storage import (PROVIDER_COMMIT, PrestartRefusal, canonical_digest, normalize_bindings,
                              storage_decision, prestart_gate, literal_safe)
 
 APP = 'fixtureapp1234'
@@ -104,7 +104,37 @@ class PrivatePrestartTests(unittest.TestCase):
     def test_created_nonroot_exact_resources(self):
         result = self.gate(self.rows)
         self.assertEqual(result['checkedServices'], ['redis', 'web'])
+        self.assertEqual(result['mountRepresentations'], {'web': 'no-legacy-bind', 'redis': 'no-legacy-bind'})
         self.assertIs(result['productionStartAuthorized'], False)
+
+    def test_exact_compose_named_bind_still_requires_matching_engine_mount(self):
+        for row, binding in zip(self.rows, self.bindings, strict=True):
+            row['HostConfig']['Binds'] = [f"{binding['physicalName']}:{binding['destination']}:rw"]
+        result = self.gate(self.rows)
+        self.assertEqual(result['mountRepresentations'], {'web': 'exact-named-bind', 'redis': 'exact-named-bind'})
+        self.rows[0]['Mounts'][0]['Type'] = 'bind'
+        with self.assertRaisesRegex(PrestartRefusal, '^prestart-engine-mount$'):
+            self.gate(self.rows)
+
+    def test_wrong_host_or_ambiguous_bind_is_refused(self):
+        binding = self.bindings[0]
+        correct = f"{binding['physicalName']}:{binding['destination']}:rw"
+        for binds, extra_mounts, code in (
+            (['/host:/app/data:rw'], None, 'prestart-absolute-host-bind'),
+            ([r'C:\host:/app/data:rw'], None, 'prestart-absolute-host-bind'),
+            (['../host:/app/data:rw'], None, 'prestart-unexpected-bind'),
+            (['wrong-name:/app/data:rw'], None, 'prestart-unexpected-bind'),
+            ([correct.replace(':rw', ':ro')], None, 'prestart-unexpected-bind'),
+            ([correct+',nocopy'], None, 'prestart-unexpected-bind'),
+            ([correct, correct], None, 'prestart-unexpected-bind'),
+            (correct, None, 'prestart-unexpected-bind'),
+            ([correct], [{'Type': 'volume'}], 'prestart-ambiguous-mount-spec'),
+        ):
+            with self.subTest(code=code, binds=binds):
+                rows = copy.deepcopy(self.rows)
+                rows[0]['HostConfig'].update(Binds=binds, Mounts=extra_mounts)
+                with self.assertRaisesRegex(PrestartRefusal, f'^{code}$'):
+                    self.gate(rows)
 
     def test_mount_image_limit_state_and_user_fail_closed(self):
         mutations = [

@@ -23,7 +23,7 @@ from private_collect import (
     provider_log_cursor, verify_missing_refusal,
 )
 from private_leaks import scan_canaries
-from private_storage import prestart_gate
+from private_storage import PrestartRefusal, prestart_gate
 from private_throwable import DIAGNOSTIC_HEADER, ObserverInstallFailure, TypedCreateObserver, provider_artifact_evidence
 from revision_identity import checks as identity_checks
 from revision_inventory import read_containers
@@ -403,12 +403,17 @@ class NativeFixture:
                         phase='native-helper-inspection'
                         artifact=opened['artifact'];self.scans.extend(observe_helper(deployment,self.canaries))
                         if mode=='prepare':
+                            phase='prepare-runtime-absence'
                             if read_containers(app): raise RuntimeError('Preparation launched runtime')
                         else:
+                            phase='prestart-route-absence'
                             self.unreachable(domain)
+                            phase='prestart-container-inspection'
                             rows=read_containers(app)
+                            phase='prestart-evidence-gate'
                             gate=prestart_gate(rows,application=app,bindings=self.bindings(app),images=artifact['images'],limits=LIMITS)
                             self.save('prestart-'+deployment,gate)
+                            phase='prestart-volume-inventory'
                             if self.volumes_snapshot()!=self.observations: raise RuntimeError('Retained storage changed before gate')
                         if any(s['leakDetected'] for s in self.scans): raise RuntimeError('Capability leak detected')
                         phase='broker-release'
@@ -451,6 +456,9 @@ class NativeFixture:
             self.save('result',self.result)
             phase='accepted'
             return scope,artifact
+        except PrestartRefusal as exc:
+            failure_code=str(exc)
+            raise
         except Exception:
             failure_code=failure_code or 'phase-check-failed'
             raise
