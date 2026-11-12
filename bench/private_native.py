@@ -17,7 +17,10 @@ import urllib.error
 import urllib.request
 
 from private_commands import bootstrap_command, START_COMMAND
-from private_collect import capture, full_provider_logs, image_evidence, observe_helper, verify_missing_refusal
+from private_collect import (
+    capture, full_provider_logs, image_evidence, observe_helper, provider_create_exception,
+    provider_log_cursor, verify_missing_refusal,
+)
 from private_leaks import scan_canaries
 from private_storage import prestart_gate
 from revision_identity import checks as identity_checks
@@ -124,6 +127,9 @@ class NativeFixture:
         self.result['currentStage']=name; self.save('result',self.result)
 
     def api(self, path, method='GET', data=None):
+        observe_create=(path=='/applications/public' and method=='POST' and
+                        self.result.get('currentStage')=='provider-first-application-create')
+        provider_cursor=provider_log_cursor() if observe_create else None
         request = urllib.request.Request('http://127.0.0.1:8000/api/v1'+path,method=method,
             headers={'Authorization':'Bearer '+self.token,'Content-Type':'application/json','Accept':'application/json'},
             data=encoded(data) if data is not None else None)
@@ -143,6 +149,8 @@ class NativeFixture:
                 if isinstance(errors,dict):
                     refusal['rejectedFields']=sorted(set(data or {}).intersection(errors))
             self.save('api-refusal',refusal)
+            if observe_create and exc.code==500:
+                self.save('provider-create-exception',provider_create_exception(provider_cursor))
             raise RuntimeError('Native API refused') from None
         except Exception: raise RuntimeError('Native API outcome unknown; no retry') from None
         try: return json.loads(raw)

@@ -2,7 +2,8 @@ import copy
 import hashlib
 import json
 import unittest
-from private_collect import verify_missing_refusal
+from unittest.mock import patch
+from private_collect import provider_create_exception, provider_exception_metadata, verify_missing_refusal
 
 
 class MissingRefusalTests(unittest.TestCase):
@@ -45,6 +46,55 @@ class MissingRefusalTests(unittest.TestCase):
                    dict(inventory=self.names+[self.name]), dict(inventory=self.names+self.names),
                    dict(inventory=['']), dict(inventory=['unexpected']), dict(expected_name='vnprivate12-web')]:
             with self.subTest(kw=kw), self.assertRaises(ValueError): self.verify(self.receipt, **kw)
+
+
+class ProviderExceptionTests(unittest.TestCase):
+    def log(self, exception, *, message='synthetic-secret-in-message'):
+        context = json.dumps({'userId': 0, 'exception': exception}, separators=(',', ':'))
+        return f'[2026-11-12 06:26:21] production.ERROR: {message} {context} []\n'.encode()
+
+    def test_exports_only_known_metadata_from_exception_context(self):
+        exception = (
+            '[object] (Illuminate\\Database\\QueryException(code: 42703): '
+            'SQLSTATE[42703] synthetic-secret-in-query)\n[stacktrace]\n'
+            '#0 /var/www/html/app/Models/Application.php(417): synthetic-secret-in-stack()'
+        )
+        self.assertEqual(provider_exception_metadata(self.log(exception)), {
+            'observation': 'classified', 'exceptionClass': 'Illuminate\\Database\\QueryException',
+            'sqlState': '42703', 'providerFile': 'app/Models/Application.php', 'providerLine': 417,
+        })
+
+    def test_refuses_false_frame_in_message_or_non_allowlisted_stack_path(self):
+        fake_frame = '#0 /var/www/html/app/Models/Application.php(617): fake()'
+        exception = (
+            '[object] (TypeError(code: 0): ' + fake_frame + ')\n[stacktrace]\n'
+            '#0 /var/www/html/app/Models/Unexpected.php(900): synthetic-secret-in-stack()'
+        )
+        self.assertEqual(provider_exception_metadata(self.log(exception, message=fake_frame)), {
+            'observation': 'classified', 'exceptionClass': 'TypeError',
+        })
+
+    def test_missing_multiple_and_unrecognized_records_do_not_export_metadata(self):
+        raw = self.log('[object] (Vendor\\SecretClass(code: 900): synthetic-secret)')
+        for logs, status in ((b'', 'missing'), (raw+raw, 'ambiguous'), (raw, 'unclassified')):
+            with self.subTest(status=status):
+                self.assertEqual(provider_exception_metadata(logs), {'observation': status})
+
+    def test_rotation_truncation_and_oversize_do_not_read_log(self):
+        for before, after in (((1, 200), (2, 200)), ((1, 200), (1, 100)), ((1, 200), (1, 65737))):
+            with self.subTest(before=before, after=after), patch('private_collect.provider_log_cursor', return_value=after), patch('private_collect.capture') as read:
+                self.assertEqual(provider_create_exception(before), {'observation': 'rotated-or-over-limit'})
+                read.assert_not_called()
+
+    def test_reads_exact_append_and_refuses_cursor_change(self):
+        raw = self.log('[object] (Error(code: 0): synthetic-secret)')
+        before, after = (1, 200), (1, 200+len(raw))
+        for verify, expected in ((after, {'observation': 'classified', 'exceptionClass': 'Error'}),
+                                 ((2, after[1]), {'observation': 'cursor-changed'})):
+            with self.subTest(verify=verify), patch('private_collect.provider_log_cursor', side_effect=(after, verify)), patch('private_collect.capture', return_value=raw) as read:
+                self.assertEqual(provider_create_exception(before), expected)
+                self.assertEqual(read.call_args.args[0][-2:], [str(before[1]), str(len(raw))])
+                self.assertEqual(read.call_args.kwargs['limit'], 65536)
 
 
 if __name__ == '__main__': unittest.main()

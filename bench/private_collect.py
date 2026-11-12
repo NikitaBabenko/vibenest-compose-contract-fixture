@@ -9,6 +9,21 @@ import time
 from private_leaks import scan_canaries
 
 
+PROVIDER_LOG = '/var/www/html/storage/logs/laravel.log'
+PROVIDER_EXCEPTION_CLASSES = {
+    'Error', 'ErrorException', 'TypeError', 'PDOException', 'RuntimeException',
+    'Illuminate\\Database\\QueryException',
+    'Illuminate\\Database\\Eloquent\\MassAssignmentException',
+    'Illuminate\\Database\\Eloquent\\ModelNotFoundException',
+}
+PROVIDER_SQL_STATES = {'22P02', '23502', '23503', '23505', '23514', '42P01', '42703'}
+PROVIDER_FILES = (
+    'app/Http/Controllers/Api/ApplicationsController.php',
+    'app/Models/Application.php', 'app/Models/ApplicationSetting.php',
+    'app/Jobs/LoadComposeFile.php',
+)
+
+
 def verify_missing_refusal(receipt, *, scope, expected_name, inventory, complete):
     """Require exact helper cause plus an independent complete volume inventory.
 
@@ -37,6 +52,70 @@ def capture(args, timeout=30, limit=64 << 20):
     if process.returncode or len(process.stdout) > limit or len(process.stderr) > limit:
         raise RuntimeError('Private evidence read failed')
     return process.stdout
+
+
+def provider_log_cursor():
+    command = '$s=@stat($argv[1]); echo $s ? $s["ino"]." ".$s["size"] : "0 0";'
+    try:
+        inode, size = map(int, capture(['docker', 'exec', 'coolify', 'php', '-r', command, PROVIDER_LOG],
+                                      timeout=10, limit=128).split())
+        return inode, size
+    except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
+        return None
+
+
+def provider_exception_metadata(raw):
+    text = raw.decode('utf-8', errors='replace')
+    headers = list(re.finditer(r'(?m)^\[\d{4}-\d\d-\d\d [^\]\r\n]+\] [a-zA-Z0-9_-]+\.([A-Z]+): ', text))
+    errors = [index for index, header in enumerate(headers) if header[1] == 'ERROR']
+    if len(errors) != 1:
+        return {'observation': 'ambiguous' if errors else 'missing'}
+    index = errors[0]
+    end = headers[index+1].start() if index+1 < len(headers) else len(text)
+    record = text[headers[index].end():end]
+    exception = ''
+    for start in re.finditer(r' \{(?="(?:userId|exception)"\s*:)', record):
+        try:
+            context, end = json.JSONDecoder().raw_decode(record, start.start()+1)
+        except ValueError:
+            continue
+        if record[end:].strip() in ('', '[]') and isinstance(context.get('exception'), str):
+            exception = context['exception']
+            break
+    match = re.match(r'\[object\] \(([a-zA-Z\\]+)\(code: [A-Z0-9]+\):', exception)
+    if not match or match[1] not in PROVIDER_EXCEPTION_CLASSES:
+        return {'observation': 'unclassified'}
+    result = {'observation': 'classified', 'exceptionClass': match[1]}
+    description, _, stack = exception.split('\n[previous exception]', 1)[0].rpartition('\n[stacktrace]\n')
+    sql_state = re.search(r'SQLSTATE\[([A-Z0-9]{5})\]', description or exception)
+    if match[1] in ('PDOException', 'Illuminate\\Database\\QueryException') and sql_state and sql_state[1] in PROVIDER_SQL_STATES:
+        result['sqlState'] = sql_state[1]
+    for frame in re.finditer(r'(?m)^#\d{1,3} /var/www/html/(app/[A-Za-z0-9_/]+\.php)\(([1-9][0-9]{0,4})\):', stack):
+        if frame[1] in PROVIDER_FILES:
+            result['providerFile'] = frame[1]
+            result['providerLine'] = int(frame[2])
+            break
+    return result
+
+
+def provider_create_exception(before):
+    after = provider_log_cursor()
+    if before is None or after is None:
+        return {'observation': 'cursor-unavailable'}
+    length = after[1]-before[1]
+    if before[0] not in (0, after[0]) or not 0 <= length <= 65536:
+        return {'observation': 'rotated-or-over-limit'}
+    if length == 0 or after[0] == 0:
+        return {'observation': 'missing'}
+    command = 'echo file_get_contents($argv[1], false, null, (int)$argv[2], (int)$argv[3]);'
+    try:
+        raw = capture(['docker', 'exec', 'coolify', 'php', '-r', command, PROVIDER_LOG,
+                       str(before[1]), str(length)], timeout=10, limit=65536)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        return {'observation': 'read-unavailable'}
+    if len(raw) != length or provider_log_cursor() != after:
+        return {'observation': 'cursor-changed'}
+    return provider_exception_metadata(raw)
 
 
 def scan_stream(args, canaries, surface, limit=1 << 30):
