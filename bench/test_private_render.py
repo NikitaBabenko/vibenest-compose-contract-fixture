@@ -38,5 +38,11 @@ class PrivateRenderTests(unittest.TestCase):
             request=self.request();mutate(request)
             with self.assertRaises(ValueError):render(request)
 
+    def test_exact_memory_swap_in_every_render_phase(self):
+        for phase in ('scrub','prepare','freeze'):
+            with self.subTest(phase=phase):
+                for service in render(self.request(phase))['config']['services'].values():
+                    self.assertEqual(service['memswap_limit'],service['mem_limit'])
+
 
 if __name__=='__main__':unittest.main()

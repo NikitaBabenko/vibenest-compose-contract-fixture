@@ -2,10 +2,34 @@
 import hashlib
 import json
 import os
+import re
 import select
 import subprocess
 import time
 from private_leaks import scan_canaries
+
+
+def verify_missing_refusal(receipt, *, scope, expected_name, inventory, complete):
+    """Require exact helper cause plus an independent complete volume inventory.
+
+    Return hashes and typed scope only, never raw physical names or config.
+    This disposable capability evidence is not host identity/production admission.
+    """
+    fields = {'schema', 'scope', 'stage', 'code', 'volumeNameDigest', 'inventoryDigest', 'createIssued'}
+    scope_fields = {'project', 'application', 'attempt', 'deployment', 'generation', 'sourceSha', 'helperDigest', 'settingsDigest'}
+    if (type(receipt) is not dict or set(receipt) != fields or type(receipt['schema']) is not int or receipt['schema'] != 1 or
+            type(receipt['scope']) is not dict or set(receipt['scope']) != scope_fields or receipt['scope'] != scope or
+            type(receipt['scope']['generation']) is not int or receipt['stage'] != 'retained-volume-inspection' or
+            receipt['code'] != 'assigned-volume-missing' or receipt['createIssued'] is not False):
+        raise ValueError('Exact missing-retained refusal receipt required')
+    if (complete is not True or type(inventory) is not list or
+            any(type(n) is not str or not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.-]*', n) for n in inventory) or
+            len(inventory) != len(set(inventory)) or not re.fullmatch(r'vnprivate[0-9]{1,20}-(web|redis)', expected_name) or expected_name in inventory):
+        raise ValueError('Complete independent absence observation required')
+    inventory_digest = hashlib.sha256(json.dumps(sorted(inventory), separators=(',', ':')).encode()).hexdigest()
+    if receipt['volumeNameDigest'] != hashlib.sha256(expected_name.encode()).hexdigest() or receipt['inventoryDigest'] != inventory_digest:
+        raise ValueError('Missing-retained observation identity mismatch')
+    return receipt.copy()
 
 
 def capture(args, timeout=30, limit=64 << 20):

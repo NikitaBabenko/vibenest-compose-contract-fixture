@@ -156,7 +156,7 @@ func RunBroker(helperPath, listenIP string, control io.Reader, replies io.Writer
 				break
 			}
 			response["ok"] = true
-		case "open", "release":
+		case "open", "release", "refusal":
 			if _, ok := exactObject(data, "op", "scope"); !ok || !exactScope(request["scope"]) {
 				break
 			}
@@ -168,6 +168,12 @@ func RunBroker(helperPath, listenIP string, control io.Reader, replies io.Writer
 					break
 				}
 				response = map[string]any{"ok": true, "artifact": json.RawMessage(value)}
+			} else if op == "refusal" {
+				value, err := store.Refusal(scope)
+				if err != nil {
+					break
+				}
+				response = map[string]any{"ok": true, "refusal": value}
 			} else {
 				response["ok"] = bridge.ReleaseFixture(scope) == nil
 			}

@@ -67,17 +67,26 @@ func (s *Store) Handler() http.Handler {
 			w.Header().Set("Content-Type", "application/octet-stream")
 			w.Header().Set("X-Content-SHA256", Hash(b))
 			_, _ = w.Write(b)
-		case r.Method == "POST" && r.URL.Path == "/v1/artifact":
+		case r.Method == "POST" && (r.URL.Path == "/v1/artifact" || r.URL.Path == "/v1/refusal"):
 			if r.Header.Get("Content-Type") != "application/json" {
 				deny()
 				return
 			}
-			b, err := io.ReadAll(io.LimitReader(r.Body, MaxArtifact+1))
-			if err != nil || len(b) > MaxArtifact {
+			limit := MaxArtifact
+			if r.URL.Path == "/v1/refusal" {
+				limit = 4096
+			}
+			b, err := io.ReadAll(io.LimitReader(r.Body, int64(limit+1)))
+			if err != nil || len(b) > limit {
 				deny()
 				return
 			}
-			h, err := s.Submit(t, scope, b)
+			var h string
+			if r.URL.Path == "/v1/refusal" {
+				h, err = s.SubmitRefusal(t, scope, b)
+			} else {
+				h, err = s.Submit(t, scope, b)
+			}
 			if err != nil {
 				deny()
 				return

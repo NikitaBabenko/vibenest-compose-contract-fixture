@@ -44,6 +44,7 @@ def render(request):
             raise ValueError('Unexpected Redis runtime override')
         service.pop('ports', None)
         service['mem_limit'] = str(memory); service['cpus'] = cpu; service['pids_limit'] = pids
+        service['memswap_limit'] = str(memory)
         service.setdefault('deploy', {}).setdefault('resources', {})['limits'] = {'memory': str(memory), 'cpus': cpu, 'pids': pids}
         service['restart'] = 'no'
         service.get('deploy', {}).pop('restart_policy', None)

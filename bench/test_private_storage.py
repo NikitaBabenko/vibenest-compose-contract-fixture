@@ -94,7 +94,7 @@ class PrivatePrestartTests(unittest.TestCase):
             self.rows.append({'Image': self.images[service],
                 'Config': {'User': 'node' if service == 'web' else '', 'Labels': {'com.docker.compose.service': service, 'com.docker.compose.project': APP}},
                 'State': {'Status': 'created', 'Running': False, 'Restarting': False, 'StartedAt': '0001-01-01T00:00:00Z'},
-                'HostConfig': {'Memory': 134217728, 'NanoCpus': 250000000, 'PidsLimit': 64, 'PortBindings': {},
+                'HostConfig': {'Memory': 134217728, 'MemorySwap': 134217728, 'NanoCpus': 250000000, 'PidsLimit': 64, 'PortBindings': {},
                                'PublishAllPorts': False, 'Privileged': False, 'NetworkMode': APP+'_default', 'Binds': None, 'Devices': []},
                 'Mounts': [{'Type': 'volume', 'Name': b['physicalName'], 'Destination': b['destination'], 'RW': True}]})
 
@@ -134,6 +134,14 @@ class PrivatePrestartTests(unittest.TestCase):
         escaped = literal_safe(value)
         self.assertEqual(escaped['services']['web']['environment'], {'LITERAL': 'a$$b\n$${CHANGED}\n"quote"', 'KEY$': '$$$$'})
         self.assertEqual(value['services']['web']['environment']['KEY$'], '$$')
+
+    def test_memory_swap_unknown_unlimited_or_mismatch_refused(self):
+        for value in (None, 0, -1, 268435456, '134217728', 134217728.0, False):
+            with self.subTest(value=value):
+                rows=copy.deepcopy(self.rows);rows[0]['HostConfig']['MemorySwap']=value
+                with self.assertRaises(ValueError):self.gate(rows)
+        rows=copy.deepcopy(self.rows);del rows[0]['HostConfig']['MemorySwap']
+        with self.assertRaises(ValueError):self.gate(rows)
 
 
 if __name__ == '__main__': unittest.main()

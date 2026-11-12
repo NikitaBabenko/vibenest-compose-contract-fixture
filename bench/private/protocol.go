@@ -72,6 +72,7 @@ type Store struct {
 	grants   map[string]*grant
 	sealed   map[Scope]envelope
 	receipts map[Scope]string
+	refusals map[Scope]Refusal
 }
 
 func NewStore(key []byte, now func() time.Time) (*Store, error) {
@@ -86,7 +87,7 @@ func NewStore(key []byte, now func() time.Time) (*Store, error) {
 	if err != nil {
 		return nil, ErrDenied
 	}
-	return &Store{now: now, aead: aead, grants: map[string]*grant{}, sealed: map[Scope]envelope{}, receipts: map[Scope]string{}}, nil
+	return &Store{now: now, aead: aead, grants: map[string]*grant{}, sealed: map[Scope]envelope{}, receipts: map[Scope]string{}, refusals: map[Scope]Refusal{}}, nil
 }
 
 func token() (string, error) {
@@ -183,7 +184,7 @@ func (s *Store) Submit(t string, scope Scope, data []byte) (string, error) {
 	if err != nil || !scope.valid(true) || g.scope != scope || g.delivery || g.used || len(data) == 0 || len(data) > MaxArtifact {
 		return "", ErrDenied
 	}
-	if _, ok := s.sealed[scope]; ok {
+	if _, ok := s.receipts[scope]; ok {
 		return "", ErrDenied
 	}
 	var artifact RuntimeArtifact

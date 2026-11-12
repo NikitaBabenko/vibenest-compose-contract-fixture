@@ -35,12 +35,13 @@ type NativeSettings struct {
 }
 
 type helperSession struct {
-	Origin   string
-	Manifest Manifest
-	Delivery string
-	Settings NativeSettings
-	Config   json.RawMessage
-	Images   map[string]string
+	Origin               string
+	Manifest             Manifest
+	Delivery             string
+	Settings             NativeSettings
+	Config               json.RawMessage
+	Images               map[string]string
+	VolumeCreateAttempts int
 }
 
 type boundedOutput struct {
@@ -282,10 +283,12 @@ func (s *helperSession) inventoryVolumes(create bool) error {
 				return ErrDenied
 			}
 			// Durable typed intent was fsynced by the runner before native dispatch.
+			s.VolumeCreateAttempts++
 			if _, err := s.run("volume-create", nil, "docker", "volume", "create", "--driver", "local", "--label", "fixture.intent="+s.Settings.Intents[key], "--label", "fixture.project="+s.Manifest.Scope.Project, name); err != nil {
 				return ErrDenied
 			}
 		} else if !seen[name] {
+			s.reportMissingVolume(name, strings.Fields(string(names)))
 			return ErrDenied
 		}
 		actual, err := s.run("volume-inspect", nil, "docker", "volume", "inspect", name)

@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 
 from private_commands import bootstrap_command, START_COMMAND
-from private_collect import capture, full_provider_logs, image_evidence, observe_helper
+from private_collect import capture, full_provider_logs, image_evidence, observe_helper, verify_missing_refusal
 from private_leaks import scan_canaries
 from private_storage import prestart_gate
 from revision_identity import checks as identity_checks
@@ -256,7 +256,7 @@ class NativeFixture:
                  'normalizedSourceKey':app+'_'+key,'declaredVolume':key}
                 for service,key,dest in [('web','app-data','/app/data'),('redis','redis-data','/data')]]
 
-    def job(self, app, domain, mode, *, retained=None, redis_image='', new=False, expected_refusal=False):
+    def job(self, app, domain, mode, *, retained=None, redis_image='', new=False, expected_missing_volume=None):
         self.identity(app)
         if mode!='prepare':
             for name in self.volumes.values():
@@ -294,6 +294,7 @@ class NativeFixture:
                 if not released:
                     opened=self.broker.call(op='open',scope=scope)
                     if opened.get('ok'):
+                        if expected_missing_volume is not None: raise RuntimeError('Missing-retained target produced runtime artifact')
                         commit=self.php("$q=App\\Models\\ApplicationDeploymentQueue::where('deployment_uuid','"+deployment+"')->sole();echo json_encode(['commit'=>$q->commit]);")
                         if json.loads(commit).get('commit')!=self.sha: raise RuntimeError('Actual native checkout commit mismatch')
                         self.save('source-'+deployment,{'queueCommit':self.sha,'manifestDigest':digest(encoded(self.source_files)),
@@ -321,8 +322,14 @@ class NativeFixture:
                     terminal=status['status'];break
                 time.sleep(2)
             if terminal is None: raise RuntimeError('Native outcome unknown; no retry')
-            if expected_refusal:
+            if expected_missing_volume is not None:
                 if released or terminal!='failed' or read_containers(app): raise RuntimeError('Expected pre-start refusal not observed')
+                refusal=self.broker.call(op='refusal',scope=scope)
+                if refusal.get('ok') is not True: raise RuntimeError('Specific missing-retained refusal receipt absent')
+                names=capture(['docker','volume','ls','-q']).decode().split()
+                verified=verify_missing_refusal(refusal.get('refusal'),scope=scope,
+                    expected_name=expected_missing_volume,inventory=names,complete=True)
+                self.save('missing-retained-refusal-'+deployment,verified)
             elif not released or terminal!=('failed' if mode=='fault' else 'finished'):
                 raise RuntimeError('Native outcome did not match fixture phase')
             # A --rm helper must disappear; retained state cannot live in its FS.
@@ -336,7 +343,7 @@ class NativeFixture:
                 'addedSinceInitial':sorted(set(volume_names)-set(self.initial_volume_names)),'assigned':self.expected_volume_names})
             if volume_names!=self.expected_volume_names: raise RuntimeError('Unexpected physical volume inventory delta')
             self.result['steps'].append({'mode':mode,'deployment':deployment,'helperRemoved':True,
-                'expectedRefusal':expected_refusal,
+                'expectedRefusal':expected_missing_volume is not None,
                 'configDigest':artifact['effectiveConfigDigest'] if artifact else None,
                 'images':artifact['images'] if artifact else None})
             self.save('result',self.result)
@@ -408,7 +415,7 @@ class NativeFixture:
             if missing in capture(['docker','volume','ls','-q']).decode().split(): raise RuntimeError('Negative target collision')
             self.volumes['app-data']=missing
             try:
-                self.job(old,'private-old.contract.localhost','activate',retained=retained,expected_refusal=True)
+                self.job(old,'private-old.contract.localhost','activate',retained=retained,expected_missing_volume=missing)
                 if missing in capture(['docker','volume','ls','-q']).decode().split(): raise RuntimeError('Missing retained target recreated')
             finally: self.volumes['app-data']=original_name
             if self.volumes_snapshot()!=self.observations: raise RuntimeError('Negative test changed retained storage')

@@ -128,7 +128,8 @@ def prestart_gate(containers, *, application, bindings, images, limits):
             raise ValueError('Unexpected host exposure')
         memory, cpus, pids = limits[service]
         if (not all(isinstance(v, int) and not isinstance(v, bool) and v > 0 for v in (memory, cpus, pids)) or
-                hostconfig.get('Memory') != memory or hostconfig.get('NanoCpus') != cpus or hostconfig.get('PidsLimit') != pids):
+                hostconfig.get('Memory') != memory or type(hostconfig.get('MemorySwap')) is not int or
+                hostconfig['MemorySwap'] != memory or hostconfig.get('NanoCpus') != cpus or hostconfig.get('PidsLimit') != pids):
             raise ValueError('Resource limit mismatch')
         if service == 'web' and config.get('User') not in {'node', '1000', '1000:1000', 'node:node'}:
             raise ValueError('SQLite web must be non-root')
