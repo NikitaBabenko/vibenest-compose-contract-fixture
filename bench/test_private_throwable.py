@@ -9,10 +9,14 @@ from unittest.mock import Mock, patch
 
 from private_native import NativeFixture
 from private_throwable import (
-    ANCHOR, DIAGNOSTIC_HEADER, EXPECTED_FPM, IMAGE_ID, IMAGE_INDEX, IMAGE_MANIFEST, INDEX,
+    ANCHOR, DIAGNOSTIC_HEADER, IMAGE_ID, IMAGE_INDEX, IMAGE_MANIFEST, INDEX,
     PLATFORM, PROVIDER_SOURCE_SHA, READY,
     InstallReason, InstallStage, TypedCreateObserver, observed_index, provider_artifact_evidence,
 )
+
+FPM_MARKER = {'fpm': True, 'opcacheEnabled': True, 'timestampValidation': True, 'revalidateSeconds': 2,
+              'fileCacheDisabled': True, 'fileCacheDirectiveAvailable': True, 'preloadDisabled': True,
+              'preloadDirectiveAvailable': True, 'workerReuseConfigured': True}
 
 
 class TypedCreateObserverTests(unittest.TestCase):
@@ -62,9 +66,10 @@ class TypedCreateObserverTests(unittest.TestCase):
 
     def test_fpm_readiness_requires_normal_health_and_exact_correlated_marker(self):
         observer = TypedCreateObserver()
-        expected = EXPECTED_FPM | {'correlation': observer.correlation}
-        for marker, status in ((expected, 'patched-fpm-ready'), (expected | {'timestampValidation': 1}, 'typed-fpm-config-mismatch'),
-                               (expected | {'correlation': 'other'}, 'typed-fpm-config-mismatch')):
+        expected = FPM_MARKER | {'correlation': observer.correlation}
+        for marker, status in ((expected, 'patched-fpm-ready'),
+                               (expected | {'timestampValidation': 1}, 'typed-fpm-marker-schema-invalid'),
+                               (expected | {'correlation': 'other'}, 'typed-fpm-marker-scope-invalid')):
             with self.subTest(status=status), patch.object(observer, 'read_file', return_value=marker) as read, patch('private_throwable.urllib.request.urlopen') as get:
                 get.return_value.__enter__.return_value.status = 200
                 result = observer.await_fpm()
@@ -75,6 +80,20 @@ class TypedCreateObserverTests(unittest.TestCase):
                 self.assertEqual((request.get_method(), request.full_url), ('GET', 'http://127.0.0.1:8000/api/health'))
                 self.assertEqual({key.lower(): value for key, value in request.headers.items()}, {DIAGNOSTIC_HEADER.lower(): observer.nonce})
 
+    def test_fpm_accepts_safe_observed_settings_and_retains_typed_failures(self):
+        observer = TypedCreateObserver()
+        for updates, status in (
+            ({'revalidateSeconds': 0, 'workerReuseConfigured': False}, 'patched-fpm-ready'),
+            ({'opcacheEnabled': False, 'timestampValidation': False, 'revalidateSeconds': None}, 'patched-fpm-ready'),
+            ({'fpm': False}, 'typed-fpm-sapi-unverified'),
+            ({'timestampValidation': False}, 'typed-fpm-cache-unverified'),
+            ({'fileCacheDisabled': False}, 'typed-fpm-cache-unverified'),
+            ({'preloadDisabled': False}, 'typed-fpm-cache-unverified'),
+        ):
+            with self.subTest(updates=updates), patch.object(observer, 'read_file', return_value=FPM_MARKER | updates | {'correlation': observer.correlation}), patch('private_throwable.urllib.request.urlopen') as get:
+                get.return_value.__enter__.return_value.status = 200
+                self.assertEqual(observer.await_fpm(), {'observation': status, **FPM_MARKER, **updates})
+
     def test_fpm_wait_is_bounded_and_missing_marker_cannot_pass(self):
         observer = TypedCreateObserver()
         with patch.object(observer, 'read_file', return_value=None), patch('private_throwable.urllib.request.urlopen') as get, patch('private_throwable.time.monotonic', side_effect=itertools.count()), patch('private_throwable.time.sleep'):
@@ -82,12 +101,16 @@ class TypedCreateObserverTests(unittest.TestCase):
             self.assertEqual(observer.await_fpm(), {'observation': 'typed-fpm-not-observed'})
             self.assertGreater(get.call_count, 0)
             self.assertLess(get.call_count, 12)
+        with patch.object(observer, 'read_file', return_value=FPM_MARKER | {'correlation': observer.correlation}), patch('private_throwable.urllib.request.urlopen') as get, patch('private_throwable.time.monotonic', side_effect=itertools.count()), patch('private_throwable.time.sleep'):
+            get.return_value.__enter__.return_value.status = 503
+            self.assertEqual(observer.await_fpm(), {'observation': 'typed-fpm-health-unverified', **FPM_MARKER})
 
     def test_unverified_fpm_aborts_before_the_provider_create_post(self):
         fixture = Mock()
         fixture.result = {'currentStage': 'provider-first-application-create'}
         fixture.token = 'synthetic'
-        for observation in ('typed-fpm-not-observed', 'typed-fpm-config-mismatch'):
+        for observation in ('typed-fpm-not-observed', 'typed-fpm-marker-scope-invalid', 'typed-fpm-marker-schema-invalid',
+                            'typed-fpm-sapi-unverified', 'typed-fpm-cache-unverified', 'typed-fpm-health-unverified'):
             with self.subTest(observation=observation), patch.dict(os.environ, {'VN_PRIVATE_TYPED_DIAGNOSTIC':'1'}), patch('private_native.TypedCreateObserver') as observer, patch('private_native.urllib.request.urlopen') as request:
                 observer.return_value.await_fpm.return_value = {'observation': observation}
                 with self.assertRaisesRegex(RuntimeError, 'patched FPM entrypoint was not verified'):

@@ -36,13 +36,18 @@ function vn_private_observe_throwable($app, array $manifest, string $correlation
             return;
         }
         if ($method === 'GET' && $path === '/api/health') {
+            $revalidate = ini_get('opcache.revalidate_freq');
+            $fileCache = ini_get('opcache.file_cache');
+            $preload = ini_get('opcache.preload');
             vn_private_write_diagnostic($ready, [
                 'correlation' => $correlation, 'fpm' => PHP_SAPI === 'fpm-fcgi',
-                'opcacheEnabled' => filter_var(ini_get('opcache.enable'), FILTER_VALIDATE_BOOLEAN),
-                'timestampValidation' => filter_var(ini_get('opcache.validate_timestamps'), FILTER_VALIDATE_BOOLEAN),
-                'revalidateSeconds' => (int) ini_get('opcache.revalidate_freq'),
-                'fileCacheDisabled' => ini_get('opcache.file_cache') === '',
-                'preloadDisabled' => ini_get('opcache.preload') === '',
+                'opcacheEnabled' => filter_var(ini_get('opcache.enable'), FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE),
+                'timestampValidation' => filter_var(ini_get('opcache.validate_timestamps'), FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE),
+                'revalidateSeconds' => is_string($revalidate) && preg_match('/\A[0-9]{1,5}\z/', $revalidate) === 1 ? (int) $revalidate : null,
+                'fileCacheDisabled' => $fileCache === false || $fileCache === '',
+                'fileCacheDirectiveAvailable' => $fileCache !== false,
+                'preloadDisabled' => $preload === false || $preload === '',
+                'preloadDirectiveAvailable' => $preload !== false,
                 'workerReuseConfigured' => getenv('PHP_FPM_PM_CONTROL') === 'ondemand' && getenv('PHP_FPM_PM_MAX_REQUESTS') === '0',
             ]);
             return;

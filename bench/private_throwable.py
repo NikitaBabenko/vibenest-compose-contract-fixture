@@ -29,8 +29,8 @@ ARMED = '/tmp/vn-private-throwable-armed.json'
 READY = '/tmp/vn-private-throwable-fpm-ready.json'
 DIAGNOSTIC_HEADER = 'X-VibeNest-Fixture-Diagnostic'
 HERE = pathlib.Path(__file__).resolve().parent
-EXPECTED_FPM = {'fpm': True, 'opcacheEnabled': True, 'timestampValidation': True, 'revalidateSeconds': 2,
-                'fileCacheDisabled': True, 'preloadDisabled': True, 'workerReuseConfigured': True}
+FPM_FLAGS = ('fpm', 'opcacheEnabled', 'timestampValidation', 'fileCacheDisabled',
+             'fileCacheDirectiveAvailable', 'preloadDisabled', 'preloadDirectiveAvailable', 'workerReuseConfigured')
 
 
 class InstallStage(StrEnum):
@@ -191,10 +191,10 @@ class TypedCreateObserver:
         return {'observation': 'typed-install-verified', **proof}
 
     def await_fpm(self):
-        expected = EXPECTED_FPM | {'correlation': self.correlation}
         request = urllib.request.Request('http://127.0.0.1:8000/api/health', headers={DIAGNOSTIC_HEADER: self.nonce})
         deadline = time.monotonic()+12
         remaining = deadline-time.monotonic()
+        observed = None
         while remaining > 0:
             try:
                 with urllib.request.urlopen(request, timeout=min(2, remaining)) as response:
@@ -206,14 +206,27 @@ class TypedCreateObserver:
                 break
             marker = self.read_file(READY, timeout=min(2, remaining))
             if marker is not None:
-                if marker != expected or any(type(marker[key]) is not type(value) for key, value in expected.items()):
-                    return {'observation': 'typed-fpm-config-mismatch'}
+                if not isinstance(marker, dict) or marker.get('correlation') != self.correlation:
+                    return {'observation': 'typed-fpm-marker-scope-invalid'}
+                revalidate = marker.get('revalidateSeconds')
+                if (set(marker) != {*FPM_FLAGS, 'correlation', 'revalidateSeconds'} or
+                        any(type(marker[key]) is not bool for key in FPM_FLAGS) or
+                        (revalidate is not None and (type(revalidate) is not int or not 0 <= revalidate <= 99999))):
+                    return {'observation': 'typed-fpm-marker-schema-invalid'}
+                observed = {key: marker[key] for key in FPM_FLAGS} | {'revalidateSeconds': revalidate}
+                if not observed['fpm']:
+                    return {'observation': 'typed-fpm-sapi-unverified', **observed}
+                if observed['opcacheEnabled'] and not (observed['timestampValidation'] and
+                        observed['fileCacheDisabled'] and observed['preloadDisabled'] and revalidate is not None):
+                    return {'observation': 'typed-fpm-cache-unverified', **observed}
                 if healthy:
-                    return {'observation': 'patched-fpm-ready', **EXPECTED_FPM}
+                    return {'observation': 'patched-fpm-ready', **observed}
             remaining = deadline-time.monotonic()
             time.sleep(max(0, min(1, remaining)))
             remaining = deadline-time.monotonic()
-        return {'observation': 'typed-fpm-not-observed'}
+        if observed is None:
+            return {'observation': 'typed-fpm-not-observed'}
+        return {'observation': 'typed-fpm-health-unverified', **observed}
 
     def read_file(self, path, *, timeout=10):
         try:
