@@ -2,6 +2,7 @@ package privatefixture
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -10,14 +11,60 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"log"
 	"math/big"
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 )
+
+const maxPublicLauncher = 8192
+
+func buildPublicLauncher(loader []byte, tlsAddr, plainAddr *net.TCPAddr, ca, helper []byte) ([]byte, error) {
+	const shebang = "#!/bin/sh\n"
+	if !bytes.HasPrefix(loader, []byte(shebang)) || len(loader) <= len(shebang) ||
+		len(loader) > maxPublicLauncher || bytes.IndexAny(loader, "\x00\r") >= 0 ||
+		tlsAddr == nil || plainAddr == nil || tlsAddr.IP.To4() == nil || !tlsAddr.IP.IsPrivate() ||
+		!tlsAddr.IP.Equal(plainAddr.IP) || tlsAddr.Zone != "" || plainAddr.Zone != "" || tlsAddr.Port <= 0 || tlsAddr.Port > 65535 ||
+		plainAddr.Port <= 0 || plainAddr.Port > 65535 || tlsAddr.Port == plainAddr.Port ||
+		len(ca) == 0 || len(ca) > maxPublicLauncher || len(helper) == 0 || len(helper) > MaxHelper {
+		return nil, ErrDenied
+	}
+	prefix := fmt.Sprintf("%sset -- 'https://%s' 'http://%s/ca.pem' '%s' '%s' '%d' \"$@\"\n",
+		shebang, tlsAddr.String(), plainAddr.String(), Hash(ca), Hash(helper), len(helper))
+	launcher := append([]byte(prefix), loader[len(shebang):]...)
+	if len(launcher) > maxPublicLauncher {
+		return nil, ErrDenied
+	}
+	return launcher, nil
+}
+
+func publicBootstrapHandler(ca, launcher []byte) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" || r.URL.RawQuery != "" || r.URL.ForceQuery || r.URL.RawPath != "" || r.Header.Get("Authorization") != "" {
+			http.Error(w, "denied", 403)
+			return
+		}
+		var body []byte
+		switch r.URL.Path {
+		case "/ca.pem":
+			w.Header().Set("Content-Type", "application/x-pem-file")
+			body = ca
+		case "/l":
+			w.Header().Set("Content-Type", "application/octet-stream")
+			body = launcher
+		default:
+			http.Error(w, "denied", 403)
+			return
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		_, _ = w.Write(body)
+	})
+}
 
 // RunBroker runs only on the explicitly disposable Actions host. Commands and
 // capabilities travel over the parent-owned stdin/stdout pipes, never HTTP admin.
@@ -30,8 +77,12 @@ func RunBroker(helperPath, listenIP string, control io.Reader, replies io.Writer
 	if err != nil || len(helper) == 0 || len(helper) > MaxHelper {
 		return ErrDenied
 	}
+	loader, err := os.ReadFile("bench/private-loader.sh")
+	if err != nil {
+		return ErrDenied
+	}
 	ip := net.ParseIP(listenIP)
-	if ip == nil || !ip.IsPrivate() {
+	if ip == nil || ip.To4() == nil || !ip.IsPrivate() {
 		return ErrDenied
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -57,34 +108,38 @@ func RunBroker(helperPath, listenIP string, control io.Reader, replies io.Writer
 		return ErrDenied
 	}
 	bridge := NewBridge(store)
-	plainListener, err := net.Listen("tcp", net.JoinHostPort(listenIP, "0"))
+	plainListener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: ip})
 	if err != nil {
 		return ErrDenied
 	}
 	defer plainListener.Close()
-	tlsListener, err := net.Listen("tcp", net.JoinHostPort(listenIP, "0"))
+	tlsListener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: ip})
 	if err != nil {
 		return ErrDenied
 	}
 	defer tlsListener.Close()
+	plainAddr := plainListener.Addr().(*net.TCPAddr)
+	tlsAddr := tlsListener.Addr().(*net.TCPAddr)
+	launcher, err := buildPublicLauncher(loader, tlsAddr, plainAddr, ca, helper)
+	if err != nil {
+		return ErrDenied
+	}
 	server := func(h http.Handler) *http.Server {
 		return &http.Server{Handler: h, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second, WriteTimeout: 20 * time.Second, IdleTimeout: 10 * time.Second, MaxHeaderBytes: 8192, ErrorLog: log.New(io.Discard, "", 0)}
 	}
-	plain := server(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "GET" || r.URL.Path != "/ca.pem" || r.URL.RawQuery != "" || r.Header.Get("Authorization") != "" {
-			http.Error(w, "denied", 403)
-			return
-		}
-		w.Header().Set("Content-Type", "application/x-pem-file")
-		_, _ = w.Write(ca)
-	}))
+	plain := server(publicBootstrapHandler(ca, launcher))
 	defer plain.Close()
 	tlsServer := server(bridge.Handler())
 	defer tlsServer.Close()
 	go plain.Serve(plainListener)
 	go tlsServer.Serve(tls.NewListener(tlsListener, &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}))
 	out := json.NewEncoder(replies)
-	if out.Encode(map[string]any{"origin": "https://" + tlsListener.Addr().String(), "caURL": "http://" + plainListener.Addr().String() + "/ca.pem", "caDigest": Hash(ca), "helperDigest": Hash(helper), "helperSize": len(helper)}) != nil {
+	if out.Encode(map[string]any{
+		"origin": "https://" + tlsAddr.String(), "caURL": "http://" + plainAddr.String() + "/ca.pem",
+		"caDigest": Hash(ca), "helperDigest": Hash(helper), "helperSize": len(helper),
+		"launcherURL": "http://" + plainAddr.String() + "/l", "launcherDigest": Hash(launcher),
+		"launcherSize": len(launcher), "publicLoaderDigest": Hash(loader),
+	}) != nil {
 		return ErrDenied
 	}
 	scanner := bufio.NewScanner(control)

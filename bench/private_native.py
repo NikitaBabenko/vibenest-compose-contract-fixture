@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.request
 
-from private_commands import bootstrap_command, START_COMMAND
+from private_commands import MAX_STORED_COMMAND, START_COMMAND, bootstrap_command
 from private_collect import (
     capture, full_provider_logs, image_evidence, observe_helper, provider_create_exception,
     provider_log_cursor, verify_missing_refusal,
@@ -100,22 +100,27 @@ class NativeFixture:
                 self.source_files[p]={'digest':digest(pathlib.Path(p).read_bytes()),'mode':int(mode[-3:],8)}
         body=pathlib.Path('private-app/Dockerfile').read_text().strip()
         self.dockerfile_body_digest=digest(body.encode())
+        reviewed_loader=capture(['git','show',self.sha+':bench/private-loader.sh'],timeout=10,limit=8192)
+        if pathlib.Path('bench/private-loader.sh').read_bytes()!=reviewed_loader:
+            raise RuntimeError('Public loader differs from reviewed source')
         self.result = {'sourceSha':self.sha, 'productionEnablementAllowed':False,'platformGatesTested':False,
             'hostProofTested':False,'routeCasTested':False,'concurrentExternalWritersFenced':False,
             'cloudBinaryParity':'unknown','nativePrivateTransport':'failed_or_unproven','steps':[]}
         gateway = json.loads(capture(['docker','network','inspect','coolify']))[0]['IPAM']['Config'][0]['Gateway']
         self.broker = Broker(executable,gateway)
+        self.build_command = bootstrap_command(os.environ['GITHUB_REPOSITORY'],self.sha,self.broker.info)
         helper_sources={str(p).replace('\\','/'):digest(p.read_bytes()) for p in pathlib.Path('bench/private').rglob('*.go') if not p.name.endswith('_test.go')}
         helper_sources['bench/private/go.mod']=digest(pathlib.Path('bench/private/go.mod').read_bytes())
         renderer_sources={p:digest(pathlib.Path(p).read_bytes()) for p in ('bench/private_render.py','bench/private_storage.py','bench/private-render.Dockerfile')}
         self.save('implementation-identity',{'sourceSha':self.sha,'goToolchain':'go1.27.4',
             'helperBinaryDigest':self.broker.info['helperDigest'],'helperBytes':self.broker.info['helperSize'],
             'helperSourceHashes':helper_sources,'helperSourceManifestDigest':digest(encoded(helper_sources)),
-            'publicLoaderDigest':digest(pathlib.Path('bench/private-loader.sh').read_bytes()),
+            'publicLoaderDigest':digest(reviewed_loader),
+            'publicLauncherDigest':self.broker.info['launcherDigest'],'publicLauncherBytes':self.broker.info['launcherSize'],
+            'bootstrapCommandLength':len(self.build_command),
             'rendererKind':'fixture Python in isolated utility container','rendererImageId':self.utility_image,
             'rendererSourceHashes':renderer_sources,'platformRendererParticipates':False,
             'productionRenderer2Acceptance':False})
-        self.build_command = bootstrap_command(os.environ['GITHUB_REPOSITORY'],self.sha,self.broker.info)
 
     def save(self, name, value):
         raw = encoded(value)
@@ -182,7 +187,7 @@ class NativeFixture:
         payload=base64.b64encode(encoded(examples)).decode()
         code="$v=json_decode(base64_decode('"+payload+"'),true);$o=[];foreach($v as $s){$o[]=Illuminate\\Support\\Facades\\Validator::make(['command'=>$s],['command'=>App\\Support\\ValidationPatterns::shellSafeCommandRules()])->passes();}echo json_encode($o);"
         accepted=json.loads(self.php(code))
-        self.save('command-validation',{'lengths':list(map(len,examples)),'accepted':accepted})
+        self.save('command-validation',{'scope':'provider-validator','lengths':list(map(len,examples)),'accepted':accepted})
         if accepted!=[True,True,True,True,False,False]: raise RuntimeError('Pinned command validator contract mismatch')
         # Exercise actual provider transformation functions with synthetic values.
         code="$v=json_decode(base64_decode('"+payload+"'),true);$o=[];foreach(array_slice($v,0,2) as $s){if(!str($s)->contains('--project-directory'))$s=str($s)->replaceFirst('compose','compose --project-directory /artifacts/test')->value();$s=injectDockerComposeFlags($s,'/artifacts/test/private-compose.yaml','/artifacts/build-time.env');$s=injectDockerComposeBuildArgs($s,'--build-arg NEVER_A_REAL_SECRET=value');$o[]=$s;}echo json_encode($o);"
@@ -219,19 +224,32 @@ class NativeFixture:
         return {'observation':'command-storage-observed','columns':columns}
 
     def command_api_boundaries(self, app):
+        if not app.isalnum():
+            raise RuntimeError('Invalid command probe application identity')
+        lengths=(MAX_STORED_COMMAND-1,MAX_STORED_COMMAND,1001)
         statuses=[]
-        for length in (999,1000,1001):
-            request=urllib.request.Request('http://127.0.0.1:8000/api/v1/applications/'+app,method='PATCH',
-                headers={'Authorization':'Bearer '+self.token,'Content-Type':'application/json','Accept':'application/json'},
-                data=encoded({'docker_compose_custom_build_command':'true '+'a'*(length-5)}))
-            try:
-                with urllib.request.urlopen(request,timeout=30) as response:
-                    response.read(1<<20);statuses.append(response.status)
-            except urllib.error.HTTPError as exc:
-                exc.read(1<<20);statuses.append(exc.code)
-        self.save('command-api-boundaries',{'lengths':[999,1000,1001],'statuses':statuses})
-        self.api('/applications/'+app,'PATCH',{'docker_compose_custom_build_command':self.build_command})
-        if statuses[:2]!=[200,200] or statuses[2]!=422: raise RuntimeError('Actual API command length contract mismatch')
+        stored_lengths=[]
+        command_field="$a=App\\Models\\Application::where('uuid','"+app+"')->sole();$command=(string)$a->docker_compose_custom_build_command;"
+        try:
+            for length in lengths:
+                request=urllib.request.Request('http://127.0.0.1:8000/api/v1/applications/'+app,method='PATCH',
+                    headers={'Authorization':'Bearer '+self.token,'Content-Type':'application/json','Accept':'application/json'},
+                    data=encoded({'docker_compose_custom_build_command':'true '+'a'*(length-5)}))
+                try:
+                    with urllib.request.urlopen(request,timeout=30) as response:
+                        response.read(1<<20);statuses.append(response.status)
+                except urllib.error.HTTPError as exc:
+                    with exc:
+                        exc.read(1<<20)
+                    statuses.append(exc.code)
+                stored_lengths.append(int(self.php(command_field+'echo strlen($command);')) if statuses[-1]==200 else None)
+        finally:
+            self.api('/applications/'+app,'PATCH',{'docker_compose_custom_build_command':self.build_command})
+        restored=self.php(command_field+"echo hash('sha256',$command);").decode().strip()==digest(self.build_command.encode())
+        self.save('command-api-boundaries',{'lengths':lengths,'statuses':statuses,'storedLengths':stored_lengths,
+                                           'restoredBootstrapVerified':restored})
+        if statuses!=[200,200,422] or stored_lengths!=[lengths[0],lengths[1],None] or not restored:
+            raise RuntimeError('Actual API command storage or validation contract mismatch')
 
     def identity(self, app):
         actual=self.api('/applications/'+app)
@@ -451,8 +469,7 @@ class NativeFixture:
             self.project=self.api('/projects','POST',{'name':'Private native transport fixture'})['uuid']
             self.stage('provider-first-application-create')
             typed_diagnostic=os.environ.get('VN_PRIVATE_TYPED_DIAGNOSTIC')=='1'
-            if typed_diagnostic:
-                self.save('provider-command-storage',self.command_storage_evidence())
+            self.save('provider-command-storage',self.command_storage_evidence())
             old=self.create('private-retained','private-old.contract.localhost',diagnostic_only=typed_diagnostic)
             if typed_diagnostic:
                 self.result['typedCreateDiagnostic']='provider-create-accepted'

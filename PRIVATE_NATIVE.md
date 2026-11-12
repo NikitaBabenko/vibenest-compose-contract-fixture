@@ -6,6 +6,13 @@ The fixture Python render utility is used; platform renderer 2.0.0 does not
 participate and its production acceptance remains false. Native execution and
 production readiness cannot be inferred from local unit tests.
 
+Coolify 4.7.5 persists custom Compose commands in PostgreSQL columns limited to
+255 characters. The fixture tests parser acceptance separately from persisted
+PATCH readback. The short build command checks the SHA-256 of a bounded public
+launcher before executing it. The launcher combines the reviewed loader bytes
+with public broker, CA and helper metadata. Helper delivery still uses the
+pinned TLS CA and a per-attempt capability kept out of the launcher and command.
+
 Both services use `memswap_limit == mem_limit`. The independent pre-start gate
 requires an explicit integer Docker `HostConfig.MemorySwap` equal to the exact
 assigned memory limit. Missing, unknown, unlimited and mismatched values refuse.
