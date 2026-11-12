@@ -23,6 +23,7 @@ from private_collect import (
 )
 from private_leaks import scan_canaries
 from private_storage import prestart_gate
+from private_throwable import DIAGNOSTIC_HEADER, TypedCreateObserver
 from revision_identity import checks as identity_checks
 from revision_inventory import read_containers
 from revision_wait import wait_for_removal
@@ -129,9 +130,23 @@ class NativeFixture:
     def api(self, path, method='GET', data=None):
         observe_create=(path=='/applications/public' and method=='POST' and
                         self.result.get('currentStage')=='provider-first-application-create')
-        provider_cursor=provider_log_cursor() if observe_create else None
+        typed_observer=None
+        headers={'Authorization':'Bearer '+self.token,'Content-Type':'application/json','Accept':'application/json'}
+        if observe_create and os.environ.get('VN_PRIVATE_TYPED_DIAGNOSTIC')=='1':
+            typed_observer=TypedCreateObserver()
+            try:
+                typed_observer.install()
+            except (OSError, RuntimeError, subprocess.TimeoutExpired):
+                self.save('provider-create-exception',{'observation':'typed-install-unavailable'})
+                raise RuntimeError('Disposable Throwable observer could not be installed') from None
+            readiness=typed_observer.await_fpm()
+            self.save('provider-fpm-readiness',readiness)
+            if readiness.get('observation')!='patched-fpm-ready':
+                raise RuntimeError('Disposable patched FPM entrypoint was not verified')
+            headers[DIAGNOSTIC_HEADER]=typed_observer.nonce
+        provider_cursor=provider_log_cursor() if observe_create and typed_observer is None else None
         request = urllib.request.Request('http://127.0.0.1:8000/api/v1'+path,method=method,
-            headers={'Authorization':'Bearer '+self.token,'Content-Type':'application/json','Accept':'application/json'},
+            headers=headers,
             data=encoded(data) if data is not None else None)
         try:
             with urllib.request.urlopen(request,timeout=30) as response: raw=response.read(16<<20)
@@ -150,7 +165,8 @@ class NativeFixture:
                     refusal['rejectedFields']=sorted(set(data or {}).intersection(errors))
             self.save('api-refusal',refusal)
             if observe_create and exc.code==500:
-                self.save('provider-create-exception',provider_create_exception(provider_cursor))
+                evidence=typed_observer.read() if typed_observer is not None else provider_create_exception(provider_cursor)
+                self.save('provider-create-exception',evidence)
             raise RuntimeError('Native API refused') from None
         except Exception: raise RuntimeError('Native API outcome unknown; no retry') from None
         try: return json.loads(raw)
@@ -216,7 +232,7 @@ class NativeFixture:
             self.save('runtime-env-flags-'+app,metadata)
         return result
 
-    def create(self, name, domain):
+    def create(self, name, domain, *, diagnostic_only=False):
         app=self.api('/applications/public','POST',{'name':name,'project_uuid':self.project,
             'environment_name':'production','server_uuid':self.server['uuid'],
             'git_repository':'https://github.com/'+os.environ['GITHUB_REPOSITORY'],
@@ -230,7 +246,10 @@ class NativeFixture:
             'include_coolify_default_variables':False,'include_source_commit_in_build':False,
             'is_raw_compose_deployment_enabled':False,'is_auto_deploy_enabled':False,
             'is_preview_deployments_enabled':False,'instant_deploy':False})['uuid']
-        self.apps.append(app);self.identity(app)
+        self.apps.append(app)
+        if diagnostic_only:
+            return app
+        self.identity(app)
         if read_containers(app): raise RuntimeError('Create launched application')
         self.env(app,'FIXTURE_LITERAL',self.literal,runtime=True)
         self.env(app,'FIXTURE_BUILD_ALLOWED','allowed-build-dollar$fixture',build=True)
@@ -401,7 +420,11 @@ class NativeFixture:
             self.stage('provider-project-create')
             self.project=self.api('/projects','POST',{'name':'Private native transport fixture'})['uuid']
             self.stage('provider-first-application-create')
-            old=self.create('private-retained','private-old.contract.localhost')
+            typed_diagnostic=os.environ.get('VN_PRIVATE_TYPED_DIAGNOSTIC')=='1'
+            old=self.create('private-retained','private-old.contract.localhost',diagnostic_only=typed_diagnostic)
+            if typed_diagnostic:
+                self.result['typedCreateDiagnostic']='provider-create-accepted'
+                return
             self.command_api_boundaries(old)
             self.stage('prepare-old-native-new-storage')
             retained,old_artifact=self.job(old,'private-old.contract.localhost','prepare',new=True)

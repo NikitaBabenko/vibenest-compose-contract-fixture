@@ -1,0 +1,33 @@
+{
+  "classes": [
+    "Exception", "Error", "ErrorException", "ParseError", "TypeError", "ValueError", "ArgumentCountError",
+    "RuntimeException", "LogicException", "InvalidArgumentException", "DomainException", "OutOfBoundsException",
+    "OutOfRangeException", "LengthException", "UnexpectedValueException", "BadMethodCallException",
+    "PDOException", "JsonException", "DivisionByZeroError", "ArithmeticError",
+    "App\\Exceptions\\CloudProviderApiException", "App\\Exceptions\\DatabaseStartException",
+    "App\\Exceptions\\DeploymentException", "App\\Exceptions\\DnsRecordConflictException",
+    "App\\Exceptions\\NonReportableException", "App\\Exceptions\\ProcessException",
+    "Illuminate\\Database\\QueryException", "Illuminate\\Database\\UniqueConstraintViolationException",
+    "Illuminate\\Database\\LostConnectionException", "Illuminate\\Database\\Eloquent\\MassAssignmentException",
+    "Illuminate\\Database\\Eloquent\\ModelNotFoundException", "Illuminate\\Contracts\\Encryption\\DecryptException",
+    "Illuminate\\Http\\Client\\ConnectionException", "Illuminate\\Http\\Client\\RequestException",
+    "Illuminate\\Validation\\ValidationException"
+  ],
+  "files": [
+    "public/index.php", "bootstrap/app.php", "bootstrap/helpers/api.php", "bootstrap/helpers/applications.php",
+    "bootstrap/helpers/docker.php", "bootstrap/helpers/domains.php", "bootstrap/helpers/shared.php",
+    "app/Http/Controllers/Api/ApplicationsController.php", "app/Http/Controllers/Api/ProjectController.php",
+    "app/Actions/Application/LoadComposeFile.php", "app/Models/Application.php", "app/Models/ApplicationSetting.php",
+    "app/Models/ApplicationDeploymentQueue.php", "app/Models/ApplicationPreview.php", "app/Models/GithubApp.php",
+    "app/Models/Environment.php", "app/Models/Server.php", "app/Support/ValidationPatterns.php",
+    "app/Jobs/ApplicationDeploymentJob.php", "app/Exceptions/Handler.php",
+    "vendor/laravel/framework/src/Illuminate/Database/Connection.php",
+    "vendor/laravel/framework/src/Illuminate/Database/QueryException.php",
+    "vendor/laravel/framework/src/Illuminate/Database/Eloquent/Builder.php",
+    "vendor/laravel/framework/src/Illuminate/Database/Eloquent/Model.php",
+    "vendor/laravel/framework/src/Illuminate/Database/Eloquent/Concerns/HasAttributes.php",
+    "vendor/laravel/framework/src/Illuminate/Database/Query/Builder.php",
+    "vendor/laravel/framework/src/Illuminate/Foundation/Exceptions/Handler.php"
+  ],
+  "codes": ["0", "1", "400", "403", "404", "409", "422", "500", "22P02", "23502", "23503", "23505", "23514", "42P01", "42703"]
+}

@@ -11,6 +11,11 @@ on:
         type: string
         required: false
         default: ''
+      diagnose_create:
+        description: Collect typed Throwable metadata for the first private fixture application creation
+        type: boolean
+        required: false
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -40,6 +45,7 @@ jobs:
         env:
           VN_PRIVATE_DISPOSABLE: '1'
           VN_PRIVATE_REVIEWED_SHA: ${{ inputs.reviewed_sha }}
+          VN_PRIVATE_TYPED_DIAGNOSTIC: ${{ inputs.diagnose_create && '1' || '0' }}
         run: |
           [[ "$VN_PRIVATE_REVIEWED_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$VN_PRIVATE_REVIEWED_SHA" = "$GITHUB_SHA"
