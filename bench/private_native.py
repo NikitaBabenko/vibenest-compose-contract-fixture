@@ -23,7 +23,7 @@ from private_collect import (
 )
 from private_leaks import scan_canaries
 from private_storage import prestart_gate
-from private_throwable import DIAGNOSTIC_HEADER, TypedCreateObserver
+from private_throwable import DIAGNOSTIC_HEADER, ObserverInstallFailure, TypedCreateObserver, provider_artifact_evidence
 from revision_identity import checks as identity_checks
 from revision_inventory import read_containers
 from revision_wait import wait_for_removal
@@ -135,10 +135,11 @@ class NativeFixture:
         if observe_create and os.environ.get('VN_PRIVATE_TYPED_DIAGNOSTIC')=='1':
             typed_observer=TypedCreateObserver()
             try:
-                typed_observer.install()
-            except (OSError, RuntimeError, subprocess.TimeoutExpired):
-                self.save('provider-create-exception',{'observation':'typed-install-unavailable'})
+                installation=typed_observer.install()
+            except ObserverInstallFailure as error:
+                self.save('provider-create-exception',error.evidence)
                 raise RuntimeError('Disposable Throwable observer could not be installed') from None
+            self.save('provider-observer-install',installation)
             readiness=typed_observer.await_fpm()
             self.save('provider-fpm-readiness',readiness)
             if readiness.get('observation')!='patched-fpm-ready':
@@ -413,6 +414,7 @@ class NativeFixture:
     def run(self):
         try:
             self.stage('provider-preflight')
+            self.save('provider-artifact',provider_artifact_evidence(pathlib.Path('evidence/provider-artifact.json')))
             version=self.api('/version')
             if version not in ('4.7.5', {'version':'4.7.5'}): raise RuntimeError('Unsupported provider version')
             self.commands_preflight()
