@@ -1,6 +1,6 @@
 #!/bin/sh
-# Candidate entrypoint only. Scrumboy dispatches a reviewed exact commit; this
-# file is not wired to an Actions workflow and must never run on a customer host.
+# Scrumboy dispatches private-native with an independently supplied reviewed SHA.
+# Guarded disposable entrypoint; must never run on a customer host.
 set -eu
 test "${GITHUB_ACTIONS:-}" = true
 test "${VN_PRIVATE_DISPOSABLE:-}" = 1

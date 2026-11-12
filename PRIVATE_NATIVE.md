@@ -30,3 +30,11 @@ Only the release coordinator may dispatch an exact reviewed revision after the
 shared disposable test slot and Actions budget checks. No independent dispatch,
 push, customer application operations or production release is part of this
 candidate's local preparation.
+
+`contract.yml` exposes `scenario=private-native` only through `workflow_dispatch`.
+The coordinator must supply `reviewed_sha` as the full exact reviewed commit and
+dispatch that same revision. A blank, malformed or mismatched input fails before
+the guarded entrypoint. The private branch invokes `bench/run-private-native.sh`
+once; the script owns its tests and bootstrap. Common legacy bootstrap, scenarios
+and `collect.py` are skipped. Only `evidence/private/` is uploaded for this branch.
+The `single` and `native-revisions` branches retain their existing paths.

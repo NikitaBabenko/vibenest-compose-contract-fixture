@@ -5,7 +5,12 @@ on:
       scenario:
         type: choice
         default: single
-        options: [single, native-revisions]
+        options: [single, native-revisions, private-native]
+      reviewed_sha:
+        description: Exact reviewed 40-character commit SHA (required for private-native)
+        type: string
+        required: false
+        default: ''
 permissions:
   contents: read
 concurrency:
@@ -17,23 +22,40 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - name: Check evidence assertions and fault injection
+        if: inputs.scenario != 'private-native'
         run: python3 -m unittest discover -s bench -p 'test_*.py' -v
       - name: Bootstrap disposable Coolify
+        if: inputs.scenario != 'private-native'
         run: python3 bench/bootstrap.py
       - name: Native provider contract
-        if: inputs.scenario != 'native-revisions'
+        if: inputs.scenario == 'single'
         run: python3 bench/contract.py
       - name: Native two-resource feasibility
         if: inputs.scenario == 'native-revisions'
         run: python3 bench/native_revisions.py
+      - name: Private native contract at exact reviewed revision
+        if: inputs.scenario == 'private-native'
+        env:
+          VN_PRIVATE_DISPOSABLE: '1'
+          VN_PRIVATE_REVIEWED_SHA: ${{ inputs.reviewed_sha }}
+        run: |
+          [[ "$VN_PRIVATE_REVIEWED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$VN_PRIVATE_REVIEWED_SHA" = "$GITHUB_SHA"
+          bash bench/run-private-native.sh
       - name: Collect sanitized evidence
-        if: always()
+        if: always() && inputs.scenario != 'private-native'
         run: python3 bench/collect.py
-      - uses: actions/upload-artifact@v4
-        if: always()
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always() && inputs.scenario != 'private-native'
         with:
           name: compose-contract-evidence
           path: evidence/
+          retention-days: 7
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always() && inputs.scenario == 'private-native'
+        with:
+          name: compose-private-contract-evidence
+          path: evidence/private/
           retention-days: 7
