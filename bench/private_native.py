@@ -132,7 +132,17 @@ class NativeFixture:
         except urllib.error.HTTPError as exc:
             raw=exc.read(1<<20)
             self.scans.append(scan_canaries(raw,self.canaries,surface='error')) if self.canaries else None
-            self.save('api-refusal',{'status':exc.code,'method':method})
+            refusal={'status':exc.code,'method':method}
+            if path in ('/projects','/applications/public'):
+                refusal['path']=path
+                try:
+                    body=json.loads(raw)
+                except ValueError:
+                    body={}
+                errors=body.get('errors') if isinstance(body,dict) else None
+                if isinstance(errors,dict):
+                    refusal['rejectedFields']=sorted(set(data or {}).intersection(errors))
+            self.save('api-refusal',refusal)
             raise RuntimeError('Native API refused') from None
         except Exception: raise RuntimeError('Native API outcome unknown; no retry') from None
         try: return json.loads(raw)
@@ -204,7 +214,7 @@ class NativeFixture:
             'git_repository':'https://github.com/'+os.environ['GITHUB_REPOSITORY'],
             'git_branch':os.environ['GITHUB_REF_NAME'],'git_commit_sha':self.sha,'build_pack':'dockercompose',
             'ports_exposes':'3000','docker_compose_location':'/private-compose.yaml',
-            'autogenerate_domain':False,'domains':None,
+            'autogenerate_domain':False,
             'docker_compose_domains':[{'name':'web','domain':'http://'+domain+':3000'}],
             'docker_compose_custom_build_command':self.build_command,'docker_compose_custom_start_command':START_COMMAND,
             'use_build_server':False,'use_build_secrets':False,'is_preserve_repository_enabled':False,
@@ -379,7 +389,10 @@ class NativeFixture:
             version=self.api('/version')
             if version not in ('4.7.5', {'version':'4.7.5'}): raise RuntimeError('Unsupported provider version')
             self.commands_preflight()
-            self.server=self.api('/servers')[0];self.project=self.api('/projects','POST',{'name':'Private native transport fixture'})['uuid']
+            self.server=self.api('/servers')[0]
+            self.stage('provider-project-create')
+            self.project=self.api('/projects','POST',{'name':'Private native transport fixture'})['uuid']
+            self.stage('provider-first-application-create')
             old=self.create('private-retained','private-old.contract.localhost')
             self.command_api_boundaries(old)
             self.stage('prepare-old-native-new-storage')
