@@ -261,4 +261,7 @@ class TypedCreateObserver:
             result['exceptionCode'] = code
         else:
             result['codeStatus'] = 'unknown'
+        sql_state = metadata.get('sqlState')
+        if isinstance(sql_state, str) and sql_state in self.manifest['sqlStates']:
+            result['sqlState'] = sql_state
         return result

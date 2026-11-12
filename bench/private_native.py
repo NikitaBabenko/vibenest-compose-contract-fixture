@@ -190,6 +190,34 @@ class NativeFixture:
         if transformed!=examples[:2]: raise RuntimeError('Native command unexpectedly rewritten')
         self.save('command-transforms',{'unchanged':True,'digests':[digest(x.encode()) for x in transformed]})
 
+    def command_storage_evidence(self):
+        lengths={'docker_compose_custom_build_command':len(self.build_command),
+                 'docker_compose_custom_start_command':len(START_COMMAND)}
+        statement=("SELECT column_name,data_type,character_maximum_length FROM information_schema.columns "
+                   "WHERE table_schema=current_schema() AND table_name='applications' "
+                   "AND column_name IN ('docker_compose_custom_build_command','docker_compose_custom_start_command')")
+        try:
+            rows=json.loads(self.php('echo json_encode(Illuminate\\Support\\Facades\\DB::select('+json.dumps(statement)+'), JSON_THROW_ON_ERROR);'))
+        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired):
+            return {'observation':'command-storage-unavailable','submittedLengths':lengths}
+        invalid={'observation':'command-storage-schema-invalid','submittedLengths':lengths}
+        if not isinstance(rows,list) or len(rows)!=len(lengths):
+            return invalid
+        columns={}
+        for row in rows:
+            if not isinstance(row,dict):
+                return invalid
+            name,data_type,limit=row.get('column_name'),row.get('data_type'),row.get('character_maximum_length')
+            if (not isinstance(name,str) or name not in lengths or name in columns or
+                    data_type not in ('character varying','text')):
+                return invalid
+            if isinstance(limit,str) and re.fullmatch(r'[1-9][0-9]{0,5}',limit):
+                limit=int(limit)
+            if limit is not None and (type(limit) is not int or not 0 < limit <= 999999):
+                return invalid
+            columns[name]={'dataType':data_type,'maximumLength':limit,'submittedLength':lengths[name]}
+        return {'observation':'command-storage-observed','columns':columns}
+
     def command_api_boundaries(self, app):
         statuses=[]
         for length in (999,1000,1001):
@@ -423,6 +451,8 @@ class NativeFixture:
             self.project=self.api('/projects','POST',{'name':'Private native transport fixture'})['uuid']
             self.stage('provider-first-application-create')
             typed_diagnostic=os.environ.get('VN_PRIVATE_TYPED_DIAGNOSTIC')=='1'
+            if typed_diagnostic:
+                self.save('provider-command-storage',self.command_storage_evidence())
             old=self.create('private-retained','private-old.contract.localhost',diagnostic_only=typed_diagnostic)
             if typed_diagnostic:
                 self.result['typedCreateDiagnostic']='provider-create-accepted'

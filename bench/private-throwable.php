@@ -88,6 +88,12 @@ function vn_private_observe_throwable($app, array $manifest, string $correlation
             if ($codeKnown) {
                 $metadata['exceptionCode'] = $code;
             }
+            if ($error instanceof PDOException) {
+                $sqlState = $error->errorInfo[0] ?? null;
+                if (is_string($sqlState) && in_array($sqlState, $manifest['sqlStates'], true)) {
+                    $metadata['sqlState'] = $sqlState;
+                }
+            }
 
             vn_private_write_diagnostic($receipt, $metadata);
         } catch (Throwable) {

@@ -51,11 +51,40 @@ class TypedCreateObserverTests(unittest.TestCase):
         armed = {'correlation': observer.correlation}
         receipt = armed | {
             'observation': 'observed', 'exceptionClass': 'Secret\\Unexpected',
-            'providerFile': '/secret/path.php', 'providerLine': 17, 'exceptionCode': 'secret-code',
+            'providerFile': '/secret/path.php', 'providerLine': 17, 'exceptionCode': 'secret-code', 'sqlState': 'secret-code',
         }
         with patch.object(observer, 'read_file', side_effect=(armed, receipt)):
             self.assertEqual(observer.read(), {'observation': 'typed-observed', 'classStatus': 'unknown',
                                                'fileStatus': 'unknown', 'codeStatus': 'unknown'})
+
+    def test_typed_pdo_receipt_projects_only_allowed_sqlstate(self):
+        observer = TypedCreateObserver()
+        armed = {'correlation': observer.correlation}
+        receipt = armed | {'observation': 'observed', 'exceptionClass': 'Illuminate\\Database\\QueryException',
+                           'sqlState': '22001', 'errorInfo': ['22001', 7, 'synthetic-private-error']}
+        with patch.object(observer, 'read_file', side_effect=(armed, receipt)):
+            self.assertEqual(observer.read(), {'observation': 'typed-observed', 'exceptionClass': 'Illuminate\\Database\\QueryException',
+                                               'fileStatus': 'unknown', 'codeStatus': 'unknown', 'sqlState': '22001'})
+
+    def test_command_storage_evidence_is_read_only_and_projects_known_columns(self):
+        fixture = Mock()
+        fixture.build_command = 'b'*585
+        build='docker_compose_custom_build_command'
+        start='docker_compose_custom_start_command'
+        fixture.php.return_value=json.dumps([
+            {'column_name':build, 'data_type':'character varying', 'character_maximum_length':'255', 'other':'synthetic-private-error'},
+            {'column_name':start, 'data_type':'text', 'character_maximum_length':None},
+        ])
+        actual=NativeFixture.command_storage_evidence(fixture)
+        self.assertEqual(actual, {'observation':'command-storage-observed','columns':{
+            build:{'dataType':'character varying','maximumLength':255,'submittedLength':585},
+            start:{'dataType':'text','maximumLength':None,'submittedLength':65},
+        }})
+        statement=fixture.php.call_args.args[0]
+        self.assertIn('DB::select("SELECT column_name,data_type,character_maximum_length FROM information_schema.columns', statement)
+        fixture.php.return_value='[{"column_name":"synthetic-private-error"},{}]'
+        self.assertEqual(NativeFixture.command_storage_evidence(fixture), {
+            'observation':'command-storage-schema-invalid','submittedLengths':{build:585,start:65}})
 
     def test_distinguishes_unarmed_request_from_armed_request_without_throwable(self):
         observer = TypedCreateObserver()
