@@ -28,6 +28,24 @@ func TestLiteralJSONRoundTripInput(t *testing.T) {
 	}
 }
 
+func TestDecodeComposeConfigTransportEscapes(t *testing.T) {
+	transport := []byte(`{"services":{"web":{"build":{"args":{"SYNTHETIC":"ordinary-$$x"}},"environment":{"LITERAL":"$$ $$x $$$$ $${NAME}\nline 2","KEY$$":"value"}}}}`)
+	semantic := []byte(`{"services":{"web":{"build":{"args":{"SYNTHETIC":"ordinary-$x"}},"environment":{"LITERAL":"$ $x $$ ${NAME}\nline 2","KEY$":"value"}}}}`)
+	decoded, err := decodeComposeConfig(transport)
+	if err != nil || !sameJSON(decoded, semantic) {
+		t.Fatal("Compose transport escaping changed literal values or keys")
+	}
+	written, err := literalBytes(decoded)
+	if err != nil || !sameJSON(written, []byte(`{"services":{"web":{"build":{"args":{"SYNTHETIC":"ordinary-$$x"}},"environment":{"LITERAL":"$$ $$x $$$$ $${NAME}\nline 2","KEY$":"value"}}}}`)) {
+		t.Fatal("literal writer did not preserve value escaping and mapping keys")
+	}
+	for _, input := range []string{`{"value":"odd-$$$"}`, `{"value":"$"}`, `{"value":`, `{"$$":"x","\u0024":"y"}`} {
+		if _, err := decodeComposeConfig([]byte(input)); err == nil {
+			t.Fatalf("accepted invalid Compose config output %q", input)
+		}
+	}
+}
+
 func TestChildOutputScannerAndBound(t *testing.T) {
 	cap := strings.Repeat("0123456789abcdef", 4)
 	for _, data := range []string{cap, base64.StdEncoding.EncodeToString([]byte(cap)), hex.EncodeToString([]byte(cap)), strings.Join(strings.Split(cap, ""), "\n"), cap[16:32]} {

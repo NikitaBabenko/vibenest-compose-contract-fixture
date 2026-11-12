@@ -396,7 +396,7 @@ class NativeFixture:
                         phase='native-cli-readback'
                         compose_version=capture(['docker','exec',deployment,'docker','compose','version','--short']).decode().strip()
                         engine_version=capture(['docker','version','--format','{{.Server.Version}}']).decode().strip()
-                        if not re.fullmatch(r'v?[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?',compose_version): raise RuntimeError('Unknown actual Compose binary')
+                        if compose_version.removeprefix('v')!='5.6.1': raise RuntimeError('Unsupported Compose config serialization version')
                         self.save('native-cli-'+deployment,{'composeVersion':compose_version,'engineVersion':engine_version,
                             'configFlags':['--env-file','/tmp/vn-private/empty.env','--project-name',app,'--project-directory','/artifacts/'+deployment,'-f','/tmp/vn-private/effective.json'],
                             'createFlags':['create','--no-build','--pull','never']})

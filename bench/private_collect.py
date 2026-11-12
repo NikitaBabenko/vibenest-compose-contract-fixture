@@ -26,14 +26,14 @@ QUEUE_LOG_LIMIT = 1 << 20
 PROVIDER_TERMINAL = frozenset(('finished','failed','cancelled','canceled'))
 PROVIDER_STATUSES = PROVIDER_TERMINAL | {'queued','in_progress'}
 FIXTURE_SCAN_STAGES = frozenset((
-    'renderer','volume-list','volume-create','volume-inspect','native-normalization','user-image-build',
+    'compose-version','renderer','volume-list','volume-create','volume-inspect','native-normalization','user-image-build',
     'dependency-pull','runtime-normalization','image-pin','writer-absence','retained-image','literal-roundtrip',
     'frozen-roundtrip','create-without-start','start-after-runner-inspection',
 ))
 FIXTURE_REFUSALS = frozenset((
     'loader-entry','loader-ca-fetch','loader-ca-pin','loader-capability-read','loader-helper-delivery',
     'loader-helper-pin','loader-helper-exec','helper-entry','helper-workdir','helper-private-directory',
-    'helper-ca-read','helper-tls-client','helper-delivery-read','helper-manifest','helper-binary-pin',
+    'helper-ca-read','helper-compose-version','helper-tls-client','helper-delivery-read','helper-manifest','helper-binary-pin',
     'helper-settings-fetch','helper-settings-parse','helper-source-verify','helper-retained-fetch','helper-scrub',
     'helper-native-normalization','helper-renderer-scrub','helper-delivery-revoke','helper-context-scan',
     'helper-volume-inventory','helper-renderer-prepare','helper-image-build','helper-dependency-pull',

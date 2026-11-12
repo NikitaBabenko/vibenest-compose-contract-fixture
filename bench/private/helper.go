@@ -18,6 +18,7 @@ import (
 
 const privateDir = "/tmp/vn-private"
 const reserved = "VN_ARTIFACT_CAPABILITY"
+const composeConfigVersion = "5.6.1"
 
 var physicalName = regexp.MustCompile(`^vnprivate[0-9]{1,20}-(web|redis)$`)
 var buildProbe = regexp.MustCompile(`(?m)^(?:#[0-9]+ [0-9]+(?:\.[0-9]+)? )?FIXTURE_BUILD_PROBE (argument|artifact-path|session-path|transport-env)\r?$`)
@@ -250,6 +251,16 @@ func canonicalJSON(raw []byte) ([]byte, error) {
 	return json.Marshal(value)
 }
 
+func decodeComposeConfig(raw []byte) ([]byte, error) {
+	// Compose 5.6.1 doubles every dollar in the serialized config output.
+	// Undo that transport escaping before rendering or comparing resolved values.
+	literal := bytes.ReplaceAll(raw, []byte("$$"), []byte("$"))
+	if !bytes.Equal(bytes.ReplaceAll(literal, []byte("$"), []byte("$$")), raw) {
+		return nil, ErrDenied
+	}
+	return canonicalJSON(literal)
+}
+
 func (s *helperSession) save() error {
 	b, err := json.Marshal(s)
 	if err != nil {
@@ -474,6 +485,11 @@ func RunHelper(phase, origin string) (result error) {
 		return ErrDenied
 	}
 	var s helperSession
+	stage = "helper-compose-version"
+	version, err := s.run("compose-version", nil, "docker", "compose", "version", "--short")
+	if err != nil || strings.TrimPrefix(strings.TrimSpace(string(version)), "v") != composeConfigVersion {
+		return ErrDenied
+	}
 	if phase == "load" {
 		stage = "helper-tls-client"
 		client, err := NewClient(origin, ca)
@@ -543,6 +559,10 @@ func RunHelper(phase, origin string) (result error) {
 		if err != nil {
 			return err
 		}
+		raw, err = decodeComposeConfig(raw)
+		if err != nil {
+			return err
+		}
 		stage = "helper-renderer-scrub"
 		rendered, err := s.render("scrub", raw, nil, nil)
 		if err != nil {
@@ -609,6 +629,10 @@ func RunHelper(phase, origin string) (result error) {
 		if err != nil {
 			return err
 		}
+		raw, err = decodeComposeConfig(raw)
+		if err != nil {
+			return err
+		}
 		var doc struct {
 			Services map[string]struct {
 				Image string `json:"image"`
@@ -662,11 +686,12 @@ func RunHelper(phase, origin string) (result error) {
 	if err != nil {
 		return ErrDenied
 	}
+	resolved, err = decodeComposeConfig(resolved)
+	if err != nil {
+		return err
+	}
 	if s.Settings.Mode == "prepare" {
-		s.Config, err = canonicalJSON(resolved)
-		if err != nil {
-			return ErrDenied
-		}
+		s.Config = resolved
 		safe, err = literalBytes(s.Config)
 		if err != nil || writePrivate("effective.json", safe) != nil {
 			return ErrDenied
@@ -674,6 +699,10 @@ func RunHelper(phase, origin string) (result error) {
 		resolved, err = s.compose("frozen-roundtrip", "config", "--format", "json")
 		if err != nil {
 			return ErrDenied
+		}
+		resolved, err = decodeComposeConfig(resolved)
+		if err != nil {
+			return err
 		}
 	}
 	if !sameJSON(resolved, s.Config) {
