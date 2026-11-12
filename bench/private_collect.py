@@ -79,17 +79,34 @@ def provider_exception_metadata(raw):
             context, end = json.JSONDecoder().raw_decode(record, start.start()+1)
         except ValueError:
             continue
-        if record[end:].strip() in ('', '[]') and isinstance(context.get('exception'), str):
+        if record[end:].strip() in ('', '[]') and isinstance(context.get('exception'), (dict, str)):
             exception = context['exception']
             break
-    match = re.match(r'\[object\] \(([a-zA-Z\\]+)\(code: [A-Z0-9]+\):', exception)
-    if not match or match[1] not in PROVIDER_EXCEPTION_CLASSES:
+    provider_file = None
+    provider_line = None
+    if isinstance(exception, dict):
+        exception_class = exception.get('class')
+        code = exception.get('code')
+        sql_state = str(code) if type(code) in (int, str) else ''
+        stack = exception.get('trace')
+        stack = stack if isinstance(stack, str) else ''
+        file = exception.get('file')
+        line = exception.get('line')
+        if isinstance(file, str) and file.startswith('/var/www/html/') and type(line) is int and 0 < line <= 99999:
+            provider_file, provider_line = file.removeprefix('/var/www/html/'), line
+    else:
+        match = re.match(r'\[object\] \(([a-zA-Z\\]+)\(code: [A-Z0-9]+\):', exception)
+        exception_class = match[1] if match else None
+        description, _, stack = exception.split('\n[previous exception]', 1)[0].rpartition('\n[stacktrace]\n')
+        match = re.search(r'SQLSTATE\[([A-Z0-9]{5})\]', description or exception)
+        sql_state = match[1] if match else ''
+    if not isinstance(exception_class, str) or exception_class not in PROVIDER_EXCEPTION_CLASSES:
         return {'observation': 'unclassified'}
-    result = {'observation': 'classified', 'exceptionClass': match[1]}
-    description, _, stack = exception.split('\n[previous exception]', 1)[0].rpartition('\n[stacktrace]\n')
-    sql_state = re.search(r'SQLSTATE\[([A-Z0-9]{5})\]', description or exception)
-    if match[1] in ('PDOException', 'Illuminate\\Database\\QueryException') and sql_state and sql_state[1] in PROVIDER_SQL_STATES:
-        result['sqlState'] = sql_state[1]
+    result = {'observation': 'classified', 'exceptionClass': exception_class}
+    if exception_class in ('PDOException', 'Illuminate\\Database\\QueryException') and sql_state in PROVIDER_SQL_STATES:
+        result['sqlState'] = sql_state
+    if provider_file in PROVIDER_FILES:
+        return result | {'providerFile': provider_file, 'providerLine': provider_line}
     for frame in re.finditer(r'(?m)^#\d{1,3} /var/www/html/(app/[A-Za-z0-9_/]+\.php)\(([1-9][0-9]{0,4})\):', stack):
         if frame[1] in PROVIDER_FILES:
             result['providerFile'] = frame[1]

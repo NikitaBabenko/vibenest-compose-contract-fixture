@@ -64,6 +64,35 @@ class ProviderExceptionTests(unittest.TestCase):
             'sqlState': '42703', 'providerFile': 'app/Models/Application.php', 'providerLine': 417,
         })
 
+    def test_coolify_redaction_tap_normalizes_throwable_to_an_object(self):
+        exception = {
+            'class': 'Illuminate\\Database\\QueryException', 'code': 42703,
+            'message': 'SQLSTATE[23505] synthetic-secret-in-query',
+            'file': '/var/www/html/vendor/laravel/framework/src/Illuminate/Database/Connection.php', 'line': 826,
+            'trace': '#0 /var/www/html/app/Http/Controllers/Api/ApplicationsController.php(1948): synthetic-secret()',
+            'previous': {'class': 'PDOException', 'code': 'synthetic-secret', 'message': 'synthetic-secret'},
+        }
+        self.assertEqual(provider_exception_metadata(self.log(exception)), {
+            'observation': 'classified', 'exceptionClass': 'Illuminate\\Database\\QueryException',
+            'sqlState': '42703', 'providerFile': 'app/Http/Controllers/Api/ApplicationsController.php',
+            'providerLine': 1948,
+        })
+
+    def test_coolify_redacted_object_does_not_export_untyped_metadata(self):
+        exception = {
+            'class': 'TypeError', 'code': 'synthetic-secret',
+            'message': '#0 /var/www/html/app/Models/Application.php(617): fake()',
+            'file': '/var/www/html/app/Models/Application.php', 'line': '617', 'trace': None,
+        }
+        self.assertEqual(provider_exception_metadata(self.log(exception)), {
+            'observation': 'classified', 'exceptionClass': 'TypeError',
+        })
+        exception['line'] = 617
+        self.assertEqual(provider_exception_metadata(self.log(exception)), {
+            'observation': 'classified', 'exceptionClass': 'TypeError',
+            'providerFile': 'app/Models/Application.php', 'providerLine': 617,
+        })
+
     def test_refuses_false_frame_in_message_or_non_allowlisted_stack_path(self):
         fake_frame = '#0 /var/www/html/app/Models/Application.php(617): fake()'
         exception = (
