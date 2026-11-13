@@ -22,7 +22,7 @@ $vnStage = 'source-pin';
 ob_start();
 try {
     foreach ($vnPins as $vnPath => $vnHash) {
-        if (hash_file(base_path($vnPath)) !== $vnHash) {
+        if (hash_file('sha256', base_path($vnPath)) !== $vnHash) {
             throw new RuntimeException('provider-source-mismatch');
         }
     }
