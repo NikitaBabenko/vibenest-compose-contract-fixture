@@ -42,7 +42,13 @@ try {
     $vnStage = 'fresh-disposable-target';
     $vnApplication = Application::where('uuid', $vnRequest['application'])->sole();
     if (!str_starts_with($vnApplication->name, 'vnprivate')
-        || $vnApplication->git_repository !== 'https://github.com/NikitaBabenko/vibenest-compose-contract-fixture'
+        // The pinned public-create API canonicalizes github.com URLs to owner/repository.
+        || !in_array($vnApplication->git_repository, [
+            'NikitaBabenko/vibenest-compose-contract-fixture',
+            'https://github.com/NikitaBabenko/vibenest-compose-contract-fixture',
+        ], true)
+        || $vnApplication->source_type !== 'App\\Models\\GithubApp'
+        || !in_array($vnApplication->source_id, [0, '0'], true)
         || $vnApplication->git_commit_sha !== $vnRequest['executionSha']
         || $vnApplication->build_pack !== 'dockercompose'
         || (int)$vnApplication->compose_parsing_version !== 5
