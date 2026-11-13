@@ -1,0 +1,158 @@
+name: Isolated pre-helper parser contract
+on:
+  workflow_dispatch:
+    inputs:
+      reviewed_sha:
+        description: Exact reviewed execution commit
+        type: string
+        required: true
+      review_json:
+        description: External execution review JSON created after the commit
+        type: string
+        required: true
+      review_sha256:
+        description: Independently approved SHA256 of the exact review JSON bytes
+        type: string
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: compose-contract
+  cancel-in-progress: false
+jobs:
+  diagnostic:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      VN_PRIVATE_DISPOSABLE: '1'
+      VN_PRIVATE_REVIEWED_SHA: ${{ inputs.reviewed_sha }}
+      VN_EXECUTION_REVIEW_SHA256: ${{ inputs.review_sha256 }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact package before any initialization
+        env:
+          VN_EXECUTION_REVIEW_JSON: ${{ inputs.review_json }}
+        run: |
+          umask 077
+          python3 - <<'PY'
+          import os, pathlib, sys
+          sys.path.insert(0, 'bench/prehelper-overlay')
+          from execution_identity import verify_execution
+          p = pathlib.Path('/tmp/vn-execution-review.json')
+          with p.open('x') as f:
+              f.write(os.environ['VN_EXECUTION_REVIEW_JSON'])
+          verify_execution(p, os.environ['VN_EXECUTION_REVIEW_SHA256'])
+          PY
+      - name: Resource and disposable host checks
+        run: |
+          set -eu
+          test "$(uname -s)" = Linux
+          test -z "${DOCKER_HOST:-}${DOCKER_CONTEXT:-}${DOCKER_TLS_VERIFY:-}"
+          test "$(awk '/MemAvailable/{print $2}' /proc/meminfo)" -gt 4000000
+          test "$(df -Pk . | awk 'NR==2{print $4}')" -gt 15000000
+          test -z "$(docker ps -aq)"
+          test ! -e /data/coolify
+          test ! -L /data
+          test ! -e /tmp/vn-private-toolchain
+          test ! -e /tmp/vn-private-runner
+          python3 - <<'PY'
+          import os, pathlib
+          with pathlib.Path('/tmp/vn-prehelper-owned-host').open('x') as f:
+              f.write(os.environ['GITHUB_RUN_ID'] + ':' + os.environ['GITHUB_SHA'])
+          PY
+      - name: Build pinned fixture utility
+        run: |
+          set -eu
+          umask 077
+          mkdir /tmp/vn-private-toolchain
+          curl -fsS --max-time 120 --proto '=https' https://dl.google.com/go/go1.27.4.linux-amd64.tar.gz -o /tmp/vn-private-toolchain/go.tar.gz
+          printf '%s  /tmp/vn-private-toolchain/go.tar.gz\n' 7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840 | sha256sum -c -
+          tar -xzf /tmp/vn-private-toolchain/go.tar.gz -C /tmp/vn-private-toolchain
+          export GOTOOLCHAIN=local GOENV=off GOPROXY=off GOSUMDB=off GOMAXPROCS=2 CGO_ENABLED=0
+          export GOCACHE=/tmp/vn-private-toolchain/cache GOPATH=/tmp/vn-private-toolchain/path
+          (cd bench/private && /tmp/vn-private-toolchain/go/bin/go build -p 1 -trimpath -buildvcs=false -ldflags='-s -w' -o /tmp/vn-private-toolchain/native ./cmd/native)
+      - name: Bootstrap owned disposable provider
+        run: |
+          set -eu
+          umask 077
+          if [ ! -e /data ]; then sudo -n install -d -m 0755 -o root -g root /data; fi
+          test ! -L /data
+          python3 bench/bootstrap.py
+          test "$(stat -c '%a' /data/coolify/source/.env)" = 600
+          test "$(stat -c '%a' /tmp/coolify-contract-token)" = 600
+          docker build -f bench/private-render.Dockerfile -t vn-private-render:local .
+      - name: Observe pinned parser with public synthetic value only
+        run: |
+          umask 077
+          python3 - <<'PY'
+          import json, os, pathlib, sys
+          sys.path[:0] = ['bench/prehelper-overlay', 'bench']
+          from execution_identity import verify_execution
+          from prehelper_contract import run_contract
+          from private_native import NativeFixture
+          from private_collect import capture, provider_artifact_evidence
+          review = pathlib.Path('/tmp/vn-execution-review.json')
+          approved = os.environ['VN_EXECUTION_REVIEW_SHA256']
+          verify_execution(review, approved)
+          utility = capture(['docker', 'image', 'inspect', '--format', '{{.Id}}', 'vn-private-render:local']).decode().strip()
+          fixture = None
+          try:
+              fixture = NativeFixture('/tmp/vn-private-toolchain/native', utility)
+              fixture.save('provider-artifact', provider_artifact_evidence(pathlib.Path('evidence/provider-artifact.json')))
+              if fixture.api('/version') not in ('4.7.5', {'version': '4.7.5'}):
+                  raise RuntimeError('Provider version mismatch')
+              fixture.commands_preflight()
+              servers = fixture.api('/servers')
+              if len(servers) != 1:
+                  raise RuntimeError('Disposable server inventory mismatch')
+              fixture.server = servers[0]
+              fixture.project = fixture.api('/projects', 'POST', {'name': 'Synthetic parser diagnostic'})['uuid']
+              app = fixture.create(fixture.prefix + '-prehelper', 'prehelper.contract.localhost', diagnostic_only=True)
+              run_contract(fixture, app, review, approved)
+              # Every probe transaction must be rolled back, with no queued deployment.
+              query = ('$a=App\\Models\\Application::where("uuid",' + json.dumps(app) + ')->sole();'
+                       'echo json_encode(["environmentRows"=>$a->environment_variables()->count(),'
+                       '"previewRows"=>$a->environment_variables_preview()->count(),'
+                       '"deployments"=>App\\Models\\ApplicationDeploymentQueue::where("application_id",$a->id)->count()]);')
+              after = json.loads(fixture.php(query))
+              after['volumeInventoryUnchanged'] = sorted(capture(['docker', 'volume', 'ls', '-q']).decode().split()) == fixture.initial_volume_names
+              fixture.save('prehelper-final-state', after)
+              if after != {'environmentRows': 0, 'previewRows': 0, 'deployments': 0, 'volumeInventoryUnchanged': True}:
+                  raise RuntimeError('Diagnostic isolation contract failed')
+          except Exception:
+              raise SystemExit('Pre-helper diagnostic failed; inspect sanitized receipts') from None
+          finally:
+              if fixture is not None:
+                  fixture.broker.close()
+          PY
+      - name: Stop only this disposable provider
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, subprocess
+          # Runner teardown removes remaining disposable files. Never delete volumes here.
+          p = pathlib.Path('/data/coolify/source')
+          if os.environ.get('GITHUB_ACTIONS') != 'true' or os.environ.get('VN_PRIVATE_DISPOSABLE') != '1':
+              raise SystemExit('Disposable runner required')
+          owned = pathlib.Path('/tmp/vn-prehelper-owned-host')
+          if not owned.is_file():
+              raise SystemExit(0)
+          if owned.read_text() != os.environ['GITHUB_RUN_ID'] + ':' + os.environ['GITHUB_SHA']:
+              raise SystemExit('Disposable ownership receipt mismatch')
+          if (p / '.env').is_file() and (p / 'docker-compose.prod.yml').is_file():
+              result = subprocess.run(['docker', 'compose', '--env-file', str(p / '.env'),
+                  '-f', str(p / 'docker-compose.yml'), '-f', str(p / 'docker-compose.prod.yml'),
+                  'down', '--timeout', '15'], capture_output=True, timeout=90)
+              if result.returncode:
+                  raise SystemExit('Disposable provider cleanup failed')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: prehelper-synthetic-diagnostic
+          path: evidence/private/
+          retention-days: 7

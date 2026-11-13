@@ -1,0 +1,93 @@
+SOURCE-ONLY ADVERSARIAL PRE-HELPER CONTRACT
+
+Status: prepared, NOT RUN (no lint, interpreter, containers, Actions or production).
+This is an overlay for unchanged NikitaBabenko/vibenest-compose-contract-fixture
+BASE f930ef88d4cdb0c4645ea38a67ad080dc7f78c4c, packaged at a NEW reviewed execution
+commit E. It is not a new runtime helper. Never set GITHUB_SHA to the base SHA.
+
+Exact packaging contract (the package/workflow is not created or run here):
+  1. In the fixture repository, branch from BASE and keep ALL 75 base tracked files
+     byte-for-byte and mode-for-mode unchanged, including existing workflows.
+  2. Add these four reviewed files at bench/prehelper-overlay/:
+     execution_identity.py, prehelper_contract.py, prehelper_probe.php, CONTRACT.txt.
+     Add only .github/workflows/prehelper-contract.yml as the fifth new file.
+     The new manual workflow imports the overlay and existing NativeFixture;
+     it must not invoke the existing full deployment runner. Review that workflow
+     and the exact package before any dispatch. No workflow is added by this patch.
+  3. Commit the complete package, obtaining E. Independently create an EXTERNAL
+     execution-review.json after E exists (do not embed E in its own commit).
+     Required exact keys:
+       schemaVersion: 1
+       fixtureBaseSha: BASE
+       executionSha: E
+       coreFiles: {all BASE paths: {mode: "100644"|"100755", sha256: blob SHA256}}
+       overlayFiles: {the five added paths: {mode: ..., sha256: blob SHA256}}
+       overlayDigest: SHA256 of ASCII JSON of overlayFiles, sorted keys,
+                      separators comma/colon, no whitespace/newline.
+     Hash the final external review bytes separately. Coordinator approves E,
+     review SHA256 and overlayDigest. The review is identity evidence, not slot
+     authorization. Do not commit placeholders or a self-asserted trusted digest.
+  4. The future workflow checks out its ACTUAL event SHA with complete ancestry.
+     Git HEAD == GITHUB_SHA == VN_PRIVATE_REVIEWED_SHA == E. Its explicit reviewed
+     SHA input must equal event SHA, not override it. Supply the externally reviewed
+     JSON and approved digest as separate workflow inputs/artifact pins. No automatic
+     dispatch. verify_execution(review_path, approved_digest) runs BEFORE bootstrap,
+     builds, initialization or application creation, and again in run_contract.
+     It verifies base ancestry, all core hashes and unchanged Git objects, the exact
+     added file set/modes/hashes, actual worktree bytes and its own loaded path.
+     Untracked fixture evidence is allowed; no untracked code is used as the overlay.
+  5. Original f930 preflight remains unchanged and naturally checks the actual E.
+     NativeFixture.sha and newly created application.git_commit_sha are E. Provider
+     PHP probe checks E; BASE and overlay/review digests are separate receipt fields.
+     No old source claim, environment spoof, guard relaxation or hidden core change.
+
+Integration point after an explicit disposable test slot is allocated:
+  - Reuse an initialized NativeFixture with unchanged f930 core, verified at E.
+  - Create a fresh fixture application via its existing create(...,
+    diagnostic_only=True); name must start vnprivate. No capability issuance.
+  - Import prehelper_contract.py from this reviewed overlay and call
+    run_contract(fixture, fresh_application_uuid, review_path, approved_review_sha256).
+  - Do not call dispatch, deploy, start, or any fixture activation method.
+No runner/workflow is installed or invoked by this change. The original fixture
+checkout remains untouched. Tests preserve its existing Actions/disposable guards;
+they do not invent another host channel or relax those guards.
+
+The probe executes real pinned applicationParser via Application::parse(), not
+a Python imitation. It tests the earlier loadComposeFile()->parse() phase. It
+temporarily creates ONLY a fixed public synthetic non-credential, with the same
+buildtime=true/runtime=false/literal=true/shown_once=true metadata. DB changes are
+rolled back; model events and queued work are suppressed. Existing ENV or any
+deployment history makes the probe refuse rather than inspect user material.
+
+It observes the parser return, DB-persisted docker_compose, YAML serialization,
+and actual injectDockerComposeFlags/injectDockerComposeBuildArgs applied to the
+fixture's real stored build command. Source hashes are checked inside the provider.
+The job itself and remote transport are NOT executed. The YAML observation is a
+parser-stage representation, not a claim to have captured the final native file.
+
+Expected decisive negative: empty reserved environment key or empty reserved
+build arg is promoted into service environment and replaced with the DB value by
+Parser5 before the custom build hook. Both must reproduce exposure, while baseline
+must not. Recognizing the expected vulnerability is a diagnostic test success,
+NEVER channel acceptance. All receipts hard-code channelAccepted=false and
+productionEnablementAllowed=false. A refused probe is incomplete, never PASS.
+
+Other cases observe direct/default/required references in ENV, labels, command,
+healthcheck, build args, escaped dollars and nested required-error expressions.
+No absence of a raw canary in those parser outputs proves they are safe: later
+Compose interpolation is not exercised. Output is only fixed status, flags,
+lengths and hashes; no ENV, Compose body, bearer, command text or exception text.
+
+Necessary next native coverage, once separately authorized and scheduled:
+  - Capture generated Compose, provider DB Compose and full log/error surfaces
+    before launcher entry, with raw data held privately and only scan metadata
+    emitted; verify exact helper/CLI/provider artifacts.
+  - Observe Dockerfile ARG injection and build-time.env file/wrapper creation.
+  - Check an admitted strict-preflight profile has no reserved-name occurrence
+    after YAML decoding, no mutable-source gap, no additional env alias/reference,
+    no pre/post hooks, no alternate commands, no build secrets or dotted-env wrapper.
+  - Check credential removal precedes ANY helper-side Compose config/build and
+    that literal values survive a reparse; required references must refuse safely.
+  - Observe provider's later generated_docker_compose write, runtime .env and logs;
+    initial helper file scrubbing cannot change provider in-memory config.
+These coverage obligations are explicitly not implemented as fake assertions here.
