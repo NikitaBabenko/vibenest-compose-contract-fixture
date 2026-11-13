@@ -94,7 +94,8 @@ jobs:
           from execution_identity import verify_execution
           from prehelper_contract import run_contract
           from private_native import NativeFixture
-          from private_collect import capture, provider_artifact_evidence
+          from private_collect import capture
+          from private_throwable import provider_artifact_evidence
           review = pathlib.Path('/tmp/vn-execution-review.json')
           approved = os.environ['VN_EXECUTION_REVIEW_SHA256']
           verify_execution(review, approved)
