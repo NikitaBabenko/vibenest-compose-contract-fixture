@@ -34,7 +34,9 @@ try {
         || ($vnRequest['acknowledgement'] ?? '') !== 'DISPOSABLE_SYNTHETIC_ONLY'
         || !preg_match('/^[a-zA-Z0-9_-]{1,128}$/D', $vnRequest['application'] ?? '')
         || !preg_match('/^[a-z0-9-]{1,48}$/D', $vnRequest['case'] ?? '')
-        || !is_array($vnRequest['compose'] ?? null)) {
+        || !is_array($vnRequest['compose'] ?? null)
+        || !is_string($vnRequest['buildCommand'] ?? null)
+        || strlen($vnRequest['buildCommand']) > 255) {
         throw new RuntimeException('probe-input-invalid');
     }
     $vnStage = 'fresh-disposable-target';
@@ -106,7 +108,7 @@ try {
             'generatedBuildArgsContainValue' => str_contains($vnBuildArgs, $vnCanary),
             'generatedBuildArgsContainKey' => str_contains($vnBuildArgs, $vnKey),
             'firstExposure' => str_contains($vnStored, $vnCanary)
-                ? 'applicationParser-empty-value-db-override-before-custom-build' : null,
+                ? 'parser-persisted-compose-before-custom-build' : null,
             'notExercised' => ['native-remote-write', 'provider-log-redaction', 'compose-cli-interpolation',
                 'Dockerfile-ARG-rewrite', 'helper-scrub', 'user-build', 'post-build-runtime-env'],
         ];
